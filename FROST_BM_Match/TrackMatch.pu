@@ -1,0 +1,53 @@
+@startuml
+actor ユーザー
+participant "B2Reader" as B2Reader
+participant "B2Writer" as B2Writer
+participant "NTBMSummary" as NTBMSummary
+participant "Boost Logger" as Logger
+participant "TFile/TTree" as TFile_TTree
+
+ユーザー -> Logger: プログラム開始ログ出力
+ユーザー -> B2Reader: B2ファイル読み込み
+ユーザー -> TFile_TTree: NTBMファイル作成および初期化
+ユーザー -> B2Writer: B2出力ファイル作成
+ユーザー -> NTBMSummary: NTBMSummaryオブジェクト初期化
+
+loop スピルごとに繰り返し
+    B2Reader -> B2Reader: ReadNextSpill()
+    B2Reader -> NTBMSummary: SetEntryInDailyFile()
+    B2Reader -> Logger: デバッグログ出力
+    
+    B2Writer -> NTBMSummary: TransferBeamInfo()
+    alt データタイプがMonteCarloの場合
+        B2Writer -> NTBMSummary: TransferMCInfo()
+    end
+    
+    B2Reader -> NTBMSummary: CreateNinjaCluster()
+    NTBMSummary -> NTBMSummary: ReconstructNinjaPosition()
+    
+    loop トラックごとに繰り返し
+        B2Writer -> NTBMSummary: TransferBabyMindTrackInfo()
+        alt NinjaHitExpected が true の場合
+            NTBMSummary -> NTBMSummary: MatchBabyMindTrack()
+            alt 最初のマッチング
+                NTBMSummary -> NTBMSummary: start_bunch 設定
+            end
+        end
+    end
+    
+    NTBMSummary -> NTBMSummary: ReconstructNinjaTangent()
+    NTBMSummary -> NTBMSummary: ReconstructNinjaPosition()
+    alt データタイプがMonteCarloでクラスタ数 > 0の場合
+        NTBMSummary -> NTBMSummary: SetTruePositionAngle()
+    end
+    
+    B2Writer -> NTBMSummary: SetHitSummaryInfo()
+    TFile_TTree -> NTBMSummary: Fill NTBM Tree
+    NTBMSummary -> NTBMSummary: Clear()
+    B2Writer -> B2Writer: Fill B2出力
+end
+
+TFile_TTree -> TFile_TTree: NTBM Tree 書き込みと保存
+Logger -> Logger: マッチ効率出力 (接続効率)
+ユーザー -> Logger: プログラム終了ログ出力
+@enduml

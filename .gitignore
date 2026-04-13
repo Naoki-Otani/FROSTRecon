@@ -1,6 +1,8 @@
 # ビルドディレクトリ（CMakeやMakefile）
 build/
 build-*/
+cmake/
+install/
 
 # コンパイル済みバイナリやオブジェクトファイル
 *.o

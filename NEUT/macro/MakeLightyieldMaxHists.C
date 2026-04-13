@@ -49,6 +49,22 @@ static inline void FindMaxAndSecondMax(const double* arr, int n, double& max1, d
   if (n < 2) max2 = max1;
 }
 
+const double L = 750; // mm // distance b/w tracker and Baby MIND
+
+bool IsBMDetect(double x, double y, double momx, double momy, double momz)
+{
+  // x,y at FROST, momx,momy,momz at FROST
+  double xbm, ybm; // (x,y) at second layer of Baby MIND
+  xbm = x + (momx / momz) * L;
+  ybm = y + (momy / momz) * L;
+
+  if (xbm < 2155 && xbm > -615 && ybm < 965 && ybm > -985) {
+    return true;
+  } else {
+    return false;
+  }
+}
+
 void MakeLightyieldMaxHists(
   int threshold_max = 20.,
   int threshold_2ndmax = 5.,
@@ -78,12 +94,24 @@ void MakeLightyieldMaxHists(
   std::vector<int>* pid = nullptr;
   std::vector<double>* energydeposit = nullptr;
   std::vector<double>* vertexposz = nullptr;
+  std::vector<double>* posx = nullptr;
+  std::vector<double>* posy = nullptr;
+  std::vector<double>* posz = nullptr;
+  std::vector<double>* momx = nullptr;
+  std::vector<double>* momy = nullptr;
+  std::vector<double>* momz = nullptr;
 
   double lightyieldx[132];
   double lightyieldy[140];
 
   t->SetBranchAddress("numhitparticle", &numhitparticle);
   t->SetBranchAddress("pid", &pid);
+  t->SetBranchAddress("posx", &posx);
+  t->SetBranchAddress("posy", &posy);
+  t->SetBranchAddress("posz", &posz);
+  t->SetBranchAddress("momx", &momx);
+  t->SetBranchAddress("momy", &momy);
+  t->SetBranchAddress("momz", &momz);
   t->SetBranchAddress("energydeposit", &energydeposit);
   t->SetBranchAddress("vertexposz", &vertexposz);
   t->SetBranchAddress("lightyieldx", lightyieldx);
@@ -109,8 +137,16 @@ void MakeLightyieldMaxHists(
   for (Long64_t ievt = 0; ievt < nEntries; ++ievt) {
     t->GetEntry(ievt);
 
-    if (!pid || !energydeposit || !vertexposz) continue;
-    if (pid->size() != energydeposit->size() || pid->size() != vertexposz->size()) continue;
+  if (!pid || !posx || !posy || !posz || !momx || !momy || !momz || !energydeposit || !vertexposz) continue;
+
+  if (pid->size() != posx->size() ||
+      pid->size() != posy->size() ||
+      pid->size() != posz->size() ||
+      pid->size() != momx->size() ||
+      pid->size() != momy->size() ||
+      pid->size() != momz->size() ||
+      pid->size() != energydeposit->size() ||
+      pid->size() != vertexposz->size()) continue;
 
     // Count particles satisfying (vertexposz < -5.25) AND (energydeposit > 0.1)
     int count = 0;
@@ -123,10 +159,18 @@ void MakeLightyieldMaxHists(
       }
     }
 
-    // Require exactly one such particle and it must be a muon
+    // Require exactly one such particle and it must be a muon detected by Baby MIND
     if (count != 1) continue;
     if (idxMu < 0) continue;
     if (std::abs((*pid)[idxMu]) != 13) continue;
+
+    const double pz = (*momz)[idxMu];
+    if (std::abs(pz) < 1.0e-12) continue;
+
+    const double xTrue = (*posx)[idxMu] + (*momx)[idxMu] / pz * (0.0 - (*posz)[idxMu]);
+    const double yTrue = (*posy)[idxMu] + (*momy)[idxMu] / pz * (0.0 - (*posz)[idxMu]);
+
+    if (!IsBMDetect(xTrue, yTrue, (*momx)[idxMu], (*momy)[idxMu], (*momz)[idxMu])) continue;
 
     // Compute max and 2nd max for X/Y arrays
     double maxX, secondX, maxY, secondY;

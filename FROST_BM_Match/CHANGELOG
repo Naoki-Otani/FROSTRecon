@@ -1,0 +1,9 @@
+v0.0.1
+	[NEW FEATURE]
+	Very first version of all projects has been done
+	Shells and scripts for bsub jobs in KEKCC added
+	[TODO]
+	Detector alignment tuning
+	Easy handle test programs to check some distributions
+	EASIROC TDC implementation (after WAGASCI TDC calibration)
+	Proper handle of WAGASCI downstream interactions/tracks

@@ -3,11 +3,11 @@ set -euo pipefail
 
 SINGLE_MAP="/group/nu/ninja/work/otani/FROSTReconData/MapFunc/mapfunc/mapfunc_singlehit_4.5.root"
 TWO_MAP="/group/nu/ninja/work/otani/FROSTReconData/MapFunc/mapfunc/mapfunc_twohit_4.5.root"
-CHI2_THRESHOLD="1.26"
+CHI2_THRESHOLD="1.23"
 
 shopt -s nullglob
 
-for dataset in e71c e71c2; do
+for dataset in e71c2; do
     INPUT_DIR="/group/nu/ninja/work/otani/FROST_beamdata/${dataset}/rootfile_aftercalib"
     OUTPUT_DIR="/group/nu/ninja/work/otani/FROST_beamdata/${dataset}/rootfile_afterrecon"
   for input_file in "${INPUT_DIR}"/*.root; do

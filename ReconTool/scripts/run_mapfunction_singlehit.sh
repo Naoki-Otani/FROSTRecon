@@ -12,8 +12,7 @@ IN_Y_PATTERN="/group/nu/ninja/work/otani/FROSTReconData/MapFunc/mcdata/singlehit
 OUT_DIR="/group/nu/ninja/work/otani/FROSTReconData/MapFunc/mapfunc"
 
 # Alphas to run
-# ALPHAS=(1.0 1.5 2.0 2.5 3.0 3.5 4.0 4.5)
-ALPHAS=(5.0 5.5 6.0 6.5 7.0)
+ALPHAS=(1.0 1.5 2.0 2.5 3.0 3.5 4.0 4.5 5.0 5.5 6.0 6.5 7.0)
 
 mkdir -p "$OUT_DIR"
 

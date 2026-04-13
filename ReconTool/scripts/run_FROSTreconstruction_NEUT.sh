@@ -13,7 +13,7 @@ ALPHAS=(1.0 1.5 2.0 2.5 3.0 3.5 4.0 4.5 5.0 5.5 6.0 6.5 7.0)
 
 # chi2-threshold values corresponding to each alpha above
 # Replace these example values with the ones you want to use.
-CHI2_THRESHOLDS=(4.28 2.61 1.76 1.39 1.30 1.28 1.26 1.26 1.27 1.28 1.27 1.28 1.29)
+CHI2_THRESHOLDS=(4.12 2.75 1.65 1.33 1.25 1.24 1.24 1.23 1.24 1.24 1.24 1.25 1.25)
 mkdir -p "$OUT_DIR"
 
 # Sanity check: both arrays must have the same length

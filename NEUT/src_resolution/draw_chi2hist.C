@@ -1,4 +1,4 @@
-// File: draw_frost_chi2.C
+// File: draw_chi2hist.C
 //
 // Usage example:
 //   root -l -q 'draw_chi2hist.C("input.root","/output/hoge.pdf","/output/hoge.txt",0)'
@@ -42,6 +42,19 @@
 #include <fstream>
 #include <stdexcept>
 
+const double L = 750; //mm //distance b/w tracker and Baby MIND
+bool IsBMDetect(double x, double y,double momx, double momy, double momz){
+  //x,y at FROST, momx,momy,momz at FROST
+  double xbm, ybm; //(x,y) at second layer of Baby MIND
+  xbm=x+(momx/momz)*L;
+  ybm=y+(momy/momz)*L;
+  if(xbm<2155 && xbm>-615 && ybm<965 && ybm>-985){
+    return true;
+  }else{
+    return false;
+  }
+}
+
 void draw_chi2hist(const char* inputRootFile="/group/nu/ninja/work/otani/FROSTReconData/FROST_NEUT/FROSTrecon_result/rootfile_afterrecon/frost_neut_320kA_1.077e21pot_ECC12_aftermppccorrection_afterrecon_1.5.root", const char* outputPdfFile="/group/nu/ninja/work/otani/FROSTReconData/FROST_NEUT/FROSTrecon_result/chi2/chi2_distribution_frost_neut_320kA_1.077e21pot_ECC12_aftermppccorrection_afterrecon_1.5.pdf", const char* outputTxtFile="/group/nu/ninja/work/otani/FROSTReconData/FROST_NEUT/FROSTrecon_result/chi2/chi2_threshold_results_frost_neut_320kA_1.077e21pot_ECC12_aftermppccorrection_afterrecon_1.5.txt", int bunch=0)
 {
     // -------------------------------------------------------------------------
@@ -75,17 +88,25 @@ void draw_chi2hist(const char* inputRootFile="/group/nu/ninja/work/otani/FROSTRe
     // -------------------------------------------------------------------------
     // Branch variables
     // -------------------------------------------------------------------------
-    std::vector<int>*    pid          = nullptr;
-    std::vector<double>* posx         = nullptr;
-    std::vector<double>* posy         = nullptr;
+    std::vector<int>*    pid           = nullptr;
+    std::vector<double>* posx          = nullptr;
+    std::vector<double>* posy          = nullptr;
+    std::vector<double>* posz          = nullptr;
+    std::vector<double>* momx          = nullptr;
+    std::vector<double>* momy          = nullptr;
+    std::vector<double>* momz          = nullptr;
     std::vector<double>* energydeposit = nullptr;
-    std::vector<double>* vertexposz   = nullptr;
-    std::vector<double>* chi2 = nullptr;
+    std::vector<double>* vertexposz    = nullptr;
+    std::vector<double>* chi2          = nullptr;
     int numhitparticle = 0;
 
     tree->SetBranchAddress("pid",           &pid);
     tree->SetBranchAddress("posx",          &posx);
     tree->SetBranchAddress("posy",          &posy);
+    tree->SetBranchAddress("posz",          &posz);
+    tree->SetBranchAddress("momx",          &momx);
+    tree->SetBranchAddress("momy",          &momy);
+    tree->SetBranchAddress("momz",          &momz);
     tree->SetBranchAddress("energydeposit", &energydeposit);
     tree->SetBranchAddress("vertexposz",    &vertexposz);
     tree->SetBranchAddress("chi2",          &chi2);
@@ -166,10 +187,14 @@ void draw_chi2hist(const char* inputRootFile="/group/nu/ninja/work/otani/FROSTRe
         const size_t nParticles = pid->size();
 
         // Ensure consistent vector sizes before using the data
-        if (posx->size() != nParticles ||
-            posy->size() != nParticles ||
+        if (posx->size()          != nParticles ||
+            posy->size()          != nParticles ||
+            posz->size()          != nParticles ||
+            momx->size()          != nParticles ||
+            momy->size()          != nParticles ||
+            momz->size()          != nParticles ||
             energydeposit->size() != nParticles ||
-            vertexposz->size() != nParticles) {
+            vertexposz->size()    != nParticles) {
             continue;
         }
 
@@ -192,29 +217,46 @@ void draw_chi2hist(const char* inputRootFile="/group/nu/ninja/work/otani/FROSTRe
         const int nCounted = static_cast<int>(countedIndices.size());
 
         // ---------------------------------------------------------------------
-        // Check whether at least one counted particle is a muon
+        // Check whether at least one counted particle is a muon and is detected by Baby MIND.
         // ---------------------------------------------------------------------
-        bool hasMuon = false;
+        bool hasBMDetectMuon = false;
+        std::vector<int> countedMuonIndices;
+
         for (int idx : countedIndices) {
             if (std::abs((*pid)[idx]) == 13) {
-                hasMuon = true;
-                break;
+                countedMuonIndices.push_back(idx);
+
+                const double pz = (*momz)[idx];
+                if (std::abs(pz) < 1.0e-12) continue;
+
+                const double xTrue = (*posx)[idx] + (*momx)[idx] / pz * (0.0 - (*posz)[idx]);
+                const double yTrue = (*posy)[idx] + (*momy)[idx] / pz * (0.0 - (*posz)[idx]);
+
+                if (IsBMDetect(xTrue, yTrue, (*momx)[idx], (*momy)[idx], (*momz)[idx])) {
+                    hasBMDetectMuon = true;
+                }
             }
         }
-
         // ---------------------------------------------------------------------
-        // (1) Exactly 1 counted hit particle, and that particle is a muon
+        // (1) Exactly 1 counted hit particle, and that particle is a muon detected by Baby MIND
         // ---------------------------------------------------------------------
         if (nCounted == 1) {
             const int idx0 = countedIndices[0];
-            // if (std::abs((*pid)[idx0]) == 13 && std::abs((*posx)[idx0]) > 500. && std::abs((*posy)[idx0]) > 500.) {
             if (std::abs((*pid)[idx0]) == 13) {
-                h1_small->Fill(chi2_value);
-                h1_large->Fill(chi2_value);
-                total_singlehit++;
-                for (int i = 0; i < nThresholds; ++i) {
-                    if (chi2_value < chi2_threshold[i]) {
-                        count_under_threshold_singlehit[i]++;
+                const double pz = (*momz)[idx0];
+                if (std::abs(pz) > 1.0e-12) {
+                    const double xTrue = (*posx)[idx0] + (*momx)[idx0] / pz * (0.0 - (*posz)[idx0]);
+                    const double yTrue = (*posy)[idx0] + (*momy)[idx0] / pz * (0.0 - (*posz)[idx0]);
+
+                    if (IsBMDetect(xTrue, yTrue, (*momx)[idx0], (*momy)[idx0], (*momz)[idx0])) {
+                        h1_small->Fill(chi2_value);
+                        h1_large->Fill(chi2_value);
+                        total_singlehit++;
+                        for (int i = 0; i < nThresholds; ++i) {
+                            if (chi2_value < chi2_threshold[i]) {
+                                count_under_threshold_singlehit[i]++;
+                            }
+                        }
                     }
                 }
             }
@@ -222,7 +264,7 @@ void draw_chi2hist(const char* inputRootFile="/group/nu/ninja/work/otani/FROSTRe
 
         // ---------------------------------------------------------------------
         // (2) Exactly 2 counted hit particles
-        //     - at least one is a muon
+        //     - at least one is a muon detected by Baby MIND
         //     - distance along x OR y is at least 9.2 mm
         //
         // The hit positions are evaluated using posx and posy.
@@ -231,13 +273,27 @@ void draw_chi2hist(const char* inputRootFile="/group/nu/ninja/work/otani/FROSTRe
             const int idx0 = countedIndices[0];
             const int idx1 = countedIndices[1];
 
-            const bool muonIncluded =
-                (std::abs((*pid)[idx0]) == 13) || (std::abs((*pid)[idx1]) == 13);
+            bool muonIncludedBM = false;
+
+            for (int idx : countedIndices) {
+                if (std::abs((*pid)[idx]) != 13) continue;
+
+                const double pz = (*momz)[idx];
+                if (std::abs(pz) < 1.0e-12) continue;
+
+                const double xTrue = (*posx)[idx] + (*momx)[idx] / pz * (0.0 - (*posz)[idx]);
+                const double yTrue = (*posy)[idx] + (*momy)[idx] / pz * (0.0 - (*posz)[idx]);
+
+                if (IsBMDetect(xTrue, yTrue, (*momx)[idx], (*momy)[idx], (*momz)[idx])) {
+                    muonIncludedBM = true;
+                    break;
+                }
+            }
 
             const double dx = std::abs((*posx)[idx0] - (*posx)[idx1]);
             const double dy = std::abs((*posy)[idx0] - (*posy)[idx1]);
 
-            if (muonIncluded && (dx >= 9.2 || dy >= 9.2)) {
+            if (muonIncludedBM && (dx >= 9.2 || dy >= 9.2)) {
                 total_twohit++;
                 h2_small->Fill(chi2_value);
                 h2_large->Fill(chi2_value);
@@ -250,9 +306,9 @@ void draw_chi2hist(const char* inputRootFile="/group/nu/ninja/work/otani/FROSTRe
         }
 
         // ---------------------------------------------------------------------
-        // (3) Two or more counted hit particles, and at least one is a muon
+        // (3) Two or more counted hit particles, and at least one is a muon detected by Baby MIND
         // ---------------------------------------------------------------------
-        if (nCounted >= 2 && hasMuon) {
+        if (nCounted >= 2 && hasBMDetectMuon) {
             h3->Fill(chi2_value);
             total_multihit++;
             for (int i = 0; i < nThresholds; ++i) {

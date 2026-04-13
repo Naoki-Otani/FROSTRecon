@@ -74,7 +74,7 @@ int main(int argc, char** argv) {
         FROST::TreeReader reader(in_path, "wls", /*read_x=*/true, /*read_y=*/false);
         const Long64_t n = (max_events > 0) ? std::min<Long64_t>(reader.Entries(), max_events) : reader.Entries();
 
-        TH1D hx("hx", "xg distribution", 400, label - 60.0, label + 60.0);
+        TH1D hx("hx", "xg distribution", FROST::kNfibX * 40, -(double)(FROST::kNfibX)*5.0, (double)(FROST::kNfibX)*5.0);
         hx.SetDirectory(nullptr);
 
         std::vector<double> mcx_sum(FROST::kNfibX, 0.0);
@@ -116,7 +116,7 @@ int main(int argc, char** argv) {
         FROST::TreeReader reader(in_path, "wls", /*read_x=*/false, /*read_y=*/true);
         const Long64_t n = (max_events > 0) ? std::min<Long64_t>(reader.Entries(), max_events) : reader.Entries();
 
-        TH1D hy("hy", "yg distribution", 400, label - 60.0, label + 60.0);
+        TH1D hy("hy", "yg distribution", FROST::kNfibY * 40, -(double)(FROST::kNfibY)*5.0, (double)(FROST::kNfibY)*5.0);
         hy.SetDirectory(nullptr);
 
         std::vector<double> mcy_sum(FROST::kNfibY, 0.0);
@@ -369,8 +369,8 @@ int main(int argc, char** argv) {
         FROST::TreeReader reader(in_path, "wls", /*read_x=*/true, /*read_y=*/true);
         const Long64_t n = (max_events > 0) ? std::min<Long64_t>(reader.Entries(), max_events) : reader.Entries();
 
-        TH1D hxm("hxm", "xg (minus candidate)", 400, label - 80.0, label + 80.0);
-        TH1D hxp("hxp", "xg (plus candidate)", 400, label - 80.0, label + 80.0);
+        TH1D hxm("hxm", "xg (minus candidate)", FROST::kNfibX * 40, -(double)(FROST::kNfibX)*5.0, (double)(FROST::kNfibX)*5.0);
+        TH1D hxp("hxp", "xg (plus candidate)", FROST::kNfibX * 40, -(double)(FROST::kNfibX)*5.0, (double)(FROST::kNfibX)*5.0);
         hxm.SetDirectory(nullptr);
         hxp.SetDirectory(nullptr);
 
@@ -441,8 +441,8 @@ int main(int argc, char** argv) {
         FROST::TreeReader reader(in_path, "wls", /*read_x=*/true, /*read_y=*/true);
         const Long64_t n = (max_events > 0) ? std::min<Long64_t>(reader.Entries(), max_events) : reader.Entries();
 
-        TH1D hym("hym", "yg (minus candidate)", 400, label - 80.0, label + 80.0);
-        TH1D hyp("hyp", "yg (plus candidate)", 400, label - 80.0, label + 80.0);
+        TH1D hym("hym", "yg (minus candidate)", FROST::kNfibY * 40, -(double)(FROST::kNfibY)*5.0, (double)(FROST::kNfibY)*5.0);
+        TH1D hyp("hyp", "yg (plus candidate)", FROST::kNfibY * 40, -(double)(FROST::kNfibY)*5.0, (double)(FROST::kNfibY)*5.0);
         hym.SetDirectory(nullptr);
         hyp.SetDirectory(nullptr);
 
