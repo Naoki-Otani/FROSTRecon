@@ -70,12 +70,18 @@ logging::trivial::severity_level ParseLogLevel(std::string level) {
 struct TrackMatchRow {
   Int_t has_match = 0;
   Int_t bm_track_id = -1;
+  Int_t frost_match_bunch = -1;
+  Int_t ninja_track_type = -1;
+  Double_t baby_mind_tangent_x = B2_NON_INITIALIZED_VALUE;
+  Double_t baby_mind_tangent_y = B2_NON_INITIALIZED_VALUE;
   Double_t expected_x = B2_NON_INITIALIZED_VALUE;
   Double_t expected_y = B2_NON_INITIALIZED_VALUE;
   Double_t frost_x = B2_NON_INITIALIZED_VALUE;
   Double_t frost_y = B2_NON_INITIALIZED_VALUE;
   Double_t dx = B2_NON_INITIALIZED_VALUE;
   Double_t dy = B2_NON_INITIALIZED_VALUE;
+  Double_t tangent_x = B2_NON_INITIALIZED_VALUE;
+  Double_t tangent_y = B2_NON_INITIALIZED_VALUE;
 };
 
 struct NearestFrostPositionResult {
@@ -598,8 +604,6 @@ double MyFuncCalculateTrackLength(const B2TrackSummary* track, double ax, double
 
   double track_length_ = 0;
 
-  double lastplane = track->GetDownstreamHit().GetPlane();
-
   const double num_magnet[19] = {0,3,0,1,1,1,2,2,2,2,4,0,3,0,4,4,4,0,0};
 
   double posx[18] = {};
@@ -611,33 +615,73 @@ double MyFuncCalculateTrackLength(const B2TrackSummary* track, double ax, double
   std::vector<UInt_t > used_hit;
 
   auto it_cluster = track->BeginCluster();
+  int debug_cluster_index = 0;
   while ( auto *cluster = it_cluster.Next() ) {
+    BOOST_LOG_TRIVIAL(debug)
+      << "MyFuncCalculateTrackLength: enter cluster "
+      << debug_cluster_index
+      << ", cluster ptr=" << static_cast<const void*>(cluster);
+
     auto it_hit = cluster->BeginHit();
+    int debug_hit_index = 0;
     while ( auto *hit = it_hit.Next() ) {
+      BOOST_LOG_TRIVIAL(debug)
+        << "MyFuncCalculateTrackLength: enter hit "
+        << debug_hit_index
+        << " in cluster " << debug_cluster_index
+        << ", hit ptr=" << static_cast<const void*>(hit);
+
+      BOOST_LOG_TRIVIAL(debug)
+        << "MyFuncCalculateTrackLength: about to call GetDetectorId()";
       if ( hit->GetDetectorId() != B2Detector::kBabyMind ) continue;
+
+      BOOST_LOG_TRIVIAL(debug)
+        << "MyFuncCalculateTrackLength: passed GetDetectorId(), about to call GetHitId()";
       if ( std::find(used_hit.begin(), used_hit.end(), hit->GetHitId())
 	   != used_hit.end() ) continue;
+
+      BOOST_LOG_TRIVIAL(debug)
+        << "MyFuncCalculateTrackLength: passed GetHitId(), about to push used_hit";
       used_hit.push_back(hit->GetHitId());
 
+      BOOST_LOG_TRIVIAL(debug)
+        << "MyFuncCalculateTrackLength: about to call GetPlane()";
       int plane = hit->GetPlane();
 
+      BOOST_LOG_TRIVIAL(debug)
+        << "MyFuncCalculateTrackLength: plane=" << plane
+        << ", about to call GetView()";
+
+      const auto view = hit->GetView();
+
+      BOOST_LOG_TRIVIAL(debug)
+        << "MyFuncCalculateTrackLength: view=" << view
+        << ", about to call GetSlot().GetValue(...)";
       TVector3 position;
 
-      dimension.GetPosBm(hit->GetView(),
+      dimension.GetPosBm(view,
 			  hit->GetPlane(),
 			  hit->GetSlot().GetValue(hit->GetReadout1()),
 			  position);
-      if ( hit->GetView() == B2View::kSideView ) {
-	posy[plane] += position.Y();
-	posz[plane] += position.Z();
-	sizey[plane]++;
+      BOOST_LOG_TRIVIAL(debug)
+        << "MyFuncCalculateTrackLength: got position"
+        << " x=" << position.X()
+        << ", y=" << position.Y()
+        << ", z=" << position.Z();
+
+      if ( view == B2View::kSideView ) {
+        posy[plane] += position.Y();
+        posz[plane] += position.Z();
+        sizey[plane]++;
       }
-      else if ( hit->GetView() == B2View::kTopView ) {
-	posx[plane] += position.X();
-	posz[plane] += position.Z();
-	sizex[plane]++;
+      else if ( view == B2View::kTopView ) {
+        posx[plane] += position.X();
+        posz[plane] += position.Z();
+        sizex[plane]++;
       }
+      ++debug_hit_index;
     }
+    ++debug_cluster_index;
   }
 
   std::vector<double > posx_mod;
@@ -759,8 +803,38 @@ void TransferBabyMindTrackInfo(const B2SpillSummary &spill_summary, NTBMSummary 
       } else { // not primary track
 	continue;
       }
+      BOOST_LOG_TRIVIAL(debug)
+        << "Processing BM track: itrack=" << itrack
+        << ", track type=" << track->GetTrackType()
+        << ", primary type=" << track->GetPrimaryTrackType()
+        << ", bunch=" << track->GetBunch();
 
-      ntbm_summary->SetBabyMindMaximumPlane(itrack, track->GetDownstreamHit().GetPlane());
+      const auto &downstream_hit = track->GetDownstreamHit();
+      BOOST_LOG_TRIVIAL(debug)
+        << "About to access downstream hit plane";
+      // ntbm_summary->SetBabyMindMaximumPlane(itrack, track->GetDownstreamHit().GetPlane());
+      int baby_mind_max_plane = -1;
+
+      auto it_cluster_for_plane = track->BeginCluster();
+      while (auto *cluster_for_plane = it_cluster_for_plane.Next()) {
+        auto it_hit_for_plane = cluster_for_plane->BeginHit();
+        while (auto *hit_for_plane = it_hit_for_plane.Next()) {
+          if (hit_for_plane->GetDetectorId() != B2Detector::kBabyMind) continue;
+          baby_mind_max_plane = std::max(baby_mind_max_plane, hit_for_plane->GetPlane());
+        }
+      }
+
+      if (baby_mind_max_plane < 0) {
+        BOOST_LOG_TRIVIAL(warning)
+          << "Skip BM track because no valid Baby MIND hit was found"
+          << " : itrack=" << itrack
+          << ", primary type=" << track->GetPrimaryTrackType()
+          << ", bunch=" << track->GetBunch();
+        continue;
+      }
+
+      ntbm_summary->SetBabyMindMaximumPlane(itrack, baby_mind_max_plane);
+
       ntbm_summary->SetTrackLengthTotal(itrack, track->GetTrackLengthTotal());
       double nll_plus = track->GetNegativeLogLikelihoodPlus();
       double nll_minus = track->GetNegativeLogLikelihoodMinus();
@@ -796,6 +870,11 @@ void TransferBabyMindTrackInfo(const B2SpillSummary &spill_summary, NTBMSummary 
       //std::cout << track->GetTrackLengthTotal() << ", " << track_length << std::endl;
 
       ntbm_summary->SetTrackLengthTotal(itrack, track_length);
+//一旦デバッグ用にオリジナルのB2トラック長を使用。
+      // Use the original B2 track length here.
+      // Some tracks contain invalid Baby MIND hit summaries that can crash
+      // MyFuncCalculateTrackLength() when accessing hit->GetPlane().
+      // ntbm_summary->SetTrackLengthTotal(itrack, track->GetTrackLengthTotal());
 
 
       itrack++;
@@ -852,8 +931,10 @@ int main(int argc, char *argv[]) {
 
     std::vector<std::vector<double>> *x_rec = nullptr;
     std::vector<std::vector<double>> *y_rec = nullptr;
+    std::vector<int> *is_hit = nullptr;
     frost_trees.frost_match->SetBranchAddress("x_rec", &x_rec);
     frost_trees.frost_match->SetBranchAddress("y_rec", &y_rec);
+    frost_trees.frost_match->SetBranchAddress("is_hit", &is_hit);
 
     TTree *ntbm_tree = new TTree("ntbm", "NINJA BabyMIND Original Summary");
     ntbm_tree->SetDirectory(nullptr);
@@ -929,6 +1010,11 @@ int main(int argc, char *argv[]) {
         for ( int ibmtrack = 0; ibmtrack < my_ntbm->GetNumberOfTracks(); ibmtrack++ ) {
           TrackMatchRow row;
           row.bm_track_id = ibmtrack;
+          row.frost_match_bunch = my_ntbm->GetBunch(ibmtrack);
+          row.ninja_track_type = my_ntbm->GetNinjaTrackType(ibmtrack);
+          row.baby_mind_tangent_y = my_ntbm->GetBabyMindTangent(ibmtrack, B2View::kSideView);
+          row.baby_mind_tangent_x = my_ntbm->GetBabyMindTangent(ibmtrack, B2View::kTopView);
+
 
           const std::vector<double> expected_position =
             CalculateExpectedPosition(my_ntbm, ibmtrack, z_shift);
@@ -942,13 +1028,22 @@ int main(int argc, char *argv[]) {
           const NearestFrostPositionResult nearest_x =
             FindNearestFrostPosition(frost_entry, bm_bunch, B2View::kTopView, row.expected_x);
 
+          const double dz_y =
+            BABYMIND_POS_Z + BM_SECOND_LAYER_POS - NINJA_POS_Z_FROST - NINJA_FROST_POS_Z
+            - (2 * B2View::kSideView - 1) * 10. + z_shift;
+          const double dz_x =
+            BABYMIND_POS_Z + BM_SECOND_LAYER_POS - NINJA_POS_Z_FROST - NINJA_FROST_POS_Z
+            - (2 * B2View::kTopView - 1) * 10. + z_shift;
+
           if (nearest_y.found) {
             row.frost_y = nearest_y.frost_position;
             row.dy = nearest_y.diff;
+            row.tangent_y = nearest_y.diff / dz_y;
           }
           if (nearest_x.found) {
             row.frost_x = nearest_x.frost_position;
             row.dx = nearest_x.diff;
+            row.tangent_x = nearest_x.diff / dz_x;
           }
 
           const bool hit_expected = NinjaHitExpected(my_ntbm, ibmtrack, z_shift);
@@ -1010,54 +1105,163 @@ int main(int argc, char *argv[]) {
     match_info_out->SetName("match_info");
     match_info_out->SetDirectory(output_b2_file);
 
-    Int_t trackmatch_has_match = 0;
-    Int_t trackmatch_bm_track_id = -1;
-    Double_t trackmatch_expected_x = B2_NON_INITIALIZED_VALUE;
-    Double_t trackmatch_expected_y = B2_NON_INITIALIZED_VALUE;
-    Double_t trackmatch_frost_x = B2_NON_INITIALIZED_VALUE;
-    Double_t trackmatch_frost_y = B2_NON_INITIALIZED_VALUE;
-    Double_t trackmatch_dx = B2_NON_INITIALIZED_VALUE;
-    Double_t trackmatch_dy = B2_NON_INITIALIZED_VALUE;
+    std::vector<Int_t> trackmatch_has_match;
+    std::vector<Int_t> trackmatch_bm_track_id;
+    std::vector<Int_t> trackmatch_frost_match_bunch;
+    std::vector<Int_t> trackmatch_ninja_track_type;
+    std::vector<Double_t> trackmatch_baby_mind_tangent_x;
+    std::vector<Double_t> trackmatch_baby_mind_tangent_y;
+    std::vector<Double_t> trackmatch_expected_x;
+    std::vector<Double_t> trackmatch_expected_y;
+    std::vector<Double_t> trackmatch_frost_nearest_x;
+    std::vector<Double_t> trackmatch_frost_nearest_y;
+    std::vector<Double_t> trackmatch_dx;
+    std::vector<Double_t> trackmatch_dy;
+    std::vector<Double_t> trackmatch_tangent_x;
+    std::vector<Double_t> trackmatch_tangent_y;
+    std::vector<Int_t> trackmatch_frost_is_hit;
+    Double_t matchinfo_spill_pot = B2_NON_INITIALIZED_VALUE;
+    Double_t matchinfo_bunch_pot[NUMBER_OF_BUNCHES];
+    Int_t matchinfo_bsd_spill_number = B2_NON_INITIALIZED_VALUE;
+    Double_t matchinfo_timestamp = B2_NON_INITIALIZED_VALUE;
+    Int_t matchinfo_bsd_good_spill_flag = B2_NON_INITIALIZED_VALUE;
+    Int_t matchinfo_wagasci_good_spill_flag = B2_NON_INITIALIZED_VALUE;
+    Int_t matchinfo_detector_flags[8];
 
-    match_info_out->Branch("trackmatch_has_match", &trackmatch_has_match, "trackmatch_has_match/I");
-    match_info_out->Branch("trackmatch_bm_track_id", &trackmatch_bm_track_id, "trackmatch_bm_track_id/I");
-    match_info_out->Branch("trackmatch_expected_x", &trackmatch_expected_x, "trackmatch_expected_x/D");
-    match_info_out->Branch("trackmatch_expected_y", &trackmatch_expected_y, "trackmatch_expected_y/D");
-    match_info_out->Branch("trackmatch_frost_x", &trackmatch_frost_x, "trackmatch_frost_x/D");
-    match_info_out->Branch("trackmatch_frost_y", &trackmatch_frost_y, "trackmatch_frost_y/D");
-    match_info_out->Branch("trackmatch_dx", &trackmatch_dx, "trackmatch_dx/D");
-    match_info_out->Branch("trackmatch_dy", &trackmatch_dy, "trackmatch_dy/D");
+    for (int i = 0; i < NUMBER_OF_BUNCHES; ++i) {
+      matchinfo_bunch_pot[i] = B2_NON_INITIALIZED_VALUE;
+    }
+    for (int i = 0; i < 8; ++i) {
+      matchinfo_detector_flags[i] = B2_NON_INITIALIZED_VALUE;
+    }
+
+    match_info_out->Branch("trackmatch_has_match", &trackmatch_has_match);
+    match_info_out->Branch("trackmatch_bm_track_id", &trackmatch_bm_track_id);
+    match_info_out->Branch("trackmatch_frost_match_bunch", &trackmatch_frost_match_bunch);
+    match_info_out->Branch("trackmatch_ninja_track_type", &trackmatch_ninja_track_type);
+    match_info_out->Branch("trackmatch_baby_mind_tangent_x", &trackmatch_baby_mind_tangent_x);
+    match_info_out->Branch("trackmatch_baby_mind_tangent_y", &trackmatch_baby_mind_tangent_y);
+    match_info_out->Branch("trackmatch_expected_x", &trackmatch_expected_x);
+    match_info_out->Branch("trackmatch_expected_y", &trackmatch_expected_y);
+    match_info_out->Branch("trackmatch_frost_nearest_x", &trackmatch_frost_nearest_x);
+    match_info_out->Branch("trackmatch_frost_nearest_y", &trackmatch_frost_nearest_y);
+    match_info_out->Branch("trackmatch_dx", &trackmatch_dx);
+    match_info_out->Branch("trackmatch_dy", &trackmatch_dy);
+    match_info_out->Branch("trackmatch_tangent_x", &trackmatch_tangent_x);
+    match_info_out->Branch("trackmatch_tangent_y", &trackmatch_tangent_y);
+    match_info_out->Branch("trackmatch_frost_is_hit", &trackmatch_frost_is_hit);
+    match_info_out->Branch("spill_pot", &matchinfo_spill_pot, "spill_pot/D");
+    match_info_out->Branch("bunch_pot", matchinfo_bunch_pot,
+                           Form("bunch_pot[%d]/D", NUMBER_OF_BUNCHES));
+    match_info_out->Branch("bsd_spill_number", &matchinfo_bsd_spill_number,
+                           "bsd_spill_number/I");
+    match_info_out->Branch("timestamp", &matchinfo_timestamp, "timestamp/D");
+    match_info_out->Branch("bsd_good_spill_flag", &matchinfo_bsd_good_spill_flag,
+                           "bsd_good_spill_flag/I");
+    match_info_out->Branch("wagasci_good_spill_flag", &matchinfo_wagasci_good_spill_flag,
+                           "wagasci_good_spill_flag/I");
+    match_info_out->Branch("detector_flags", matchinfo_detector_flags,
+                           "detector_flags[8]/I");
 
     const Long64_t ninfo = frost_trees.match_info->GetEntries();
     for (Long64_t i = 0; i < ninfo; ++i) {
       frost_trees.match_info->GetEntry(i);
+      if (i < frost_trees.frost_match->GetEntries()) {
+        frost_trees.frost_match->GetEntry(i);
+      } else {
+        is_hit = nullptr;
+      }
       const std::vector<TrackMatchRow> &rows =
         (i < static_cast<Long64_t>(spill_match_rows.size()))
           ? spill_match_rows.at(i)
           : std::vector<TrackMatchRow>{};
-      if (rows.empty()) {
-        trackmatch_has_match = 0;
-        trackmatch_bm_track_id = -1;
-        trackmatch_expected_x = B2_NON_INITIALIZED_VALUE;
-        trackmatch_expected_y = B2_NON_INITIALIZED_VALUE;
-        trackmatch_frost_x = B2_NON_INITIALIZED_VALUE;
-        trackmatch_frost_y = B2_NON_INITIALIZED_VALUE;
-        trackmatch_dx = B2_NON_INITIALIZED_VALUE;
-        trackmatch_dy = B2_NON_INITIALIZED_VALUE;
-        match_info_out->Fill();
+
+      trackmatch_has_match.clear();
+      trackmatch_bm_track_id.clear();
+      trackmatch_frost_match_bunch.clear();
+      trackmatch_ninja_track_type.clear();
+      trackmatch_baby_mind_tangent_x.clear();
+      trackmatch_baby_mind_tangent_y.clear();
+      trackmatch_expected_x.clear();
+      trackmatch_expected_y.clear();
+      trackmatch_frost_nearest_x.clear();
+      trackmatch_frost_nearest_y.clear();
+      trackmatch_dx.clear();
+      trackmatch_dy.clear();
+      trackmatch_tangent_x.clear();
+      trackmatch_tangent_y.clear();
+      trackmatch_frost_is_hit.clear();
+
+      if (i < ntbm_tree->GetEntries()) {
+        ntbm_tree->GetEntry(i);
+        matchinfo_spill_pot = my_ntbm->GetSpillPot();
+        for (int ibunch = 0; ibunch < NUMBER_OF_BUNCHES; ++ibunch) {
+          matchinfo_bunch_pot[ibunch] = my_ntbm->GetBunchPot(ibunch);
+        }
+        matchinfo_bsd_spill_number = my_ntbm->GetBsdSpillNumber();
+        matchinfo_timestamp = my_ntbm->GetTimestamp();
+        matchinfo_bsd_good_spill_flag = my_ntbm->GetBsdGoodSpillFlag();
+        matchinfo_wagasci_good_spill_flag = my_ntbm->GetWagasciGoodSpillFlag();
+        for (int idet = 0; idet < 8; ++idet) {
+          matchinfo_detector_flags[idet] = my_ntbm->GetDetectorFlags(idet);
+        }
       } else {
-        for (const auto &row : rows) {
-          trackmatch_has_match = row.has_match;
-          trackmatch_bm_track_id = row.bm_track_id;
-          trackmatch_expected_x = row.expected_x;
-          trackmatch_expected_y = row.expected_y;
-          trackmatch_frost_x = row.frost_x;
-          trackmatch_frost_y = row.frost_y;
-          trackmatch_dx = row.dx;
-          trackmatch_dy = row.dy;
-          match_info_out->Fill();
+        matchinfo_spill_pot = B2_NON_INITIALIZED_VALUE;
+        for (int ibunch = 0; ibunch < NUMBER_OF_BUNCHES; ++ibunch) {
+          matchinfo_bunch_pot[ibunch] = B2_NON_INITIALIZED_VALUE;
+        }
+        matchinfo_bsd_spill_number = B2_NON_INITIALIZED_VALUE;
+        matchinfo_timestamp = B2_NON_INITIALIZED_VALUE;
+        matchinfo_bsd_good_spill_flag = B2_NON_INITIALIZED_VALUE;
+        matchinfo_wagasci_good_spill_flag = B2_NON_INITIALIZED_VALUE;
+        for (int idet = 0; idet < 8; ++idet) {
+          matchinfo_detector_flags[idet] = B2_NON_INITIALIZED_VALUE;
         }
       }
+
+
+      trackmatch_has_match.reserve(rows.size());
+      trackmatch_bm_track_id.reserve(rows.size());
+      trackmatch_frost_match_bunch.reserve(rows.size());
+      trackmatch_ninja_track_type.reserve(rows.size());
+      trackmatch_baby_mind_tangent_x.reserve(rows.size());
+      trackmatch_baby_mind_tangent_y.reserve(rows.size());
+      trackmatch_expected_x.reserve(rows.size());
+      trackmatch_expected_y.reserve(rows.size());
+      trackmatch_frost_nearest_x.reserve(rows.size());
+      trackmatch_frost_nearest_y.reserve(rows.size());
+      trackmatch_dx.reserve(rows.size());
+      trackmatch_dy.reserve(rows.size());
+      trackmatch_tangent_x.reserve(rows.size());
+      trackmatch_tangent_y.reserve(rows.size());
+      trackmatch_frost_is_hit.reserve(rows.size());
+
+      for (const auto &row : rows) {
+        trackmatch_has_match.push_back(row.has_match);
+        trackmatch_bm_track_id.push_back(row.bm_track_id);
+        trackmatch_frost_match_bunch.push_back(row.frost_match_bunch);
+        trackmatch_ninja_track_type.push_back(row.ninja_track_type);
+        trackmatch_baby_mind_tangent_x.push_back(row.baby_mind_tangent_x);
+        trackmatch_baby_mind_tangent_y.push_back(row.baby_mind_tangent_y);
+        trackmatch_expected_x.push_back(row.expected_x);
+        trackmatch_expected_y.push_back(row.expected_y);
+        trackmatch_frost_nearest_x.push_back(row.frost_x);
+        trackmatch_frost_nearest_y.push_back(row.frost_y);
+        trackmatch_dx.push_back(row.dx);
+        trackmatch_dy.push_back(row.dy);
+        trackmatch_tangent_x.push_back(row.tangent_x);
+        trackmatch_tangent_y.push_back(row.tangent_y);
+
+        Int_t frost_is_hit_value = -1;
+        const int bunch = row.frost_match_bunch; // 1..8
+        if (is_hit && bunch >= 1 &&
+            bunch <= static_cast<int>(is_hit->size())) {
+          frost_is_hit_value = is_hit->at(bunch - 1); // vector index is 0..7
+        }
+        trackmatch_frost_is_hit.push_back(frost_is_hit_value);
+      }
+
+      match_info_out->Fill();
     }
 
     output_b2_file->cd();

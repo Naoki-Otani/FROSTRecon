@@ -1,7 +1,13 @@
 message(STATUS "HitConverter...")
 
+ROOT_GENERATE_DICTIONARY(G__HitConverterDict
+    ${CMAKE_CURRENT_SOURCE_DIR}/HitConverterDict.hh
+    LINKDEF ${CMAKE_CURRENT_SOURCE_DIR}/HitConverterLinkDef.h
+)
+
 add_executable(HitConverter
     HitConverter.cc
+    G__HitConverterDict.cxx
 )
 
 target_compile_features(HitConverter PUBLIC cxx_std_17)
