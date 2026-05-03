@@ -30,6 +30,8 @@ void NTBMSummary::Clear(Option_t *option) {
   extrapolated_position_.clear();
   baby_mind_maximum_plane_.clear();
   track_length_total_.clear();
+  negative_log_likelihood_minus_.clear();
+  negative_log_likelihood_plus_.clear();
   charge_.clear();
   direction_.clear();
   bunch_.clear();
@@ -129,6 +131,20 @@ std::ostream &operator<<(std::ostream &os, const NTBMSummary &obj) {
     os << i + 1 << " : " << obj.track_length_total_.at(i);
     if(i != obj.number_of_tracks_ - 1) os << ", ";
   }
+  os << "\n"
+     << "Negative log-likelihood under the q=-1 charge hypothesis = ";
+  for (int i = 0; i < obj.number_of_tracks_; i++) {
+    os << i + 1 << " : " << obj.negative_log_likelihood_minus_.at(i);
+    if(i != obj.number_of_tracks_ - 1) os << ", ";
+  }
+
+  os << "\n"
+     << "Negative log-likelihood under the q=+1 charge hypothesis = ";
+  for (int i = 0; i < obj.number_of_tracks_; i++) {
+    os << i + 1 << " : " << obj.negative_log_likelihood_plus_.at(i);
+    if(i != obj.number_of_tracks_ - 1) os << ", ";
+  }
+
   os << "\n"
      << "Charge = ";
   for (int i = 0; i < obj.number_of_tracks_; i++) {
@@ -388,6 +404,8 @@ void NTBMSummary::SetNumberOfTracks(int number_of_tracks) {
   }
   baby_mind_maximum_plane_.resize(number_of_tracks_);
   track_length_total_.resize(number_of_tracks_);
+  negative_log_likelihood_minus_.resize(number_of_tracks_);
+  negative_log_likelihood_plus_.resize(number_of_tracks_);
   charge_.resize(number_of_tracks_);
   direction_.resize(number_of_tracks_);
   bunch_.resize(number_of_tracks_);
@@ -570,6 +588,26 @@ double NTBMSummary::GetTrackLengthTotal(int track) const {
   if (track >= number_of_tracks_)
     throw std::out_of_range("Number of track out of range");
   return track_length_total_.at(track);
+}
+
+void NTBMSummary::SetNegativeLogLikelihoodMinus(int track, double negative_log_likelihood_minus) {
+  negative_log_likelihood_minus_.at(track) = negative_log_likelihood_minus;
+}
+
+double NTBMSummary::GetNegativeLogLikelihoodMinus(int track) const {
+  if (track >= number_of_tracks_)
+    throw std::out_of_range("Number of track out of range");
+  return negative_log_likelihood_minus_.at(track);
+}
+
+void NTBMSummary::SetNegativeLogLikelihoodPlus(int track, double negative_log_likelihood_plus) {
+  negative_log_likelihood_plus_.at(track) = negative_log_likelihood_plus;
+}
+
+double NTBMSummary::GetNegativeLogLikelihoodPlus(int track) const {
+  if (track >= number_of_tracks_)
+    throw std::out_of_range("Number of track out of range");
+  return negative_log_likelihood_plus_.at(track);
 }
 
 void NTBMSummary::SetCharge(int track, int charge) {

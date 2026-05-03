@@ -82,6 +82,8 @@ struct TrackMatchRow {
   Double_t dy = B2_NON_INITIALIZED_VALUE;
   Double_t tangent_x = B2_NON_INITIALIZED_VALUE;
   Double_t tangent_y = B2_NON_INITIALIZED_VALUE;
+  Double_t dtanx = B2_NON_INITIALIZED_VALUE;
+  Double_t dtany = B2_NON_INITIALIZED_VALUE;
 };
 
 struct NearestFrostPositionResult {
@@ -128,7 +130,7 @@ NearestFrostPositionResult FindNearestFrostPosition(const FrostEntryData &frost,
 
   double best_abs_diff = std::numeric_limits<double>::max();
   for (std::size_t i = 0; i < positions.size(); ++i) {
-    const double diff = expected_position - positions.at(i);
+    const double diff =  positions.at(i) - expected_position;
     const double abs_diff = std::fabs(diff);
     if (!result.found || abs_diff < best_abs_diff) {
       result.found = true;
@@ -392,6 +394,26 @@ std::vector<double> GetBabyMindInitialDirectionAndPosition(const B2TrackSummary 
 
 }
 
+std::vector<double> CalculateBabyMindSecondLayerPositionInFrostCoordinate(
+    NTBMSummary *ntbm, int itrack) {
+
+  const std::vector<double> bm2_position = ntbm->GetBabyMindPosition(itrack);
+
+  std::vector<double> position(2);
+  const std::vector<double> baby_mind_position = {BABYMIND_POS_Y, BABYMIND_POS_X};
+  const std::vector<double> ninja_overall_position = {NINJA_POS_Y, NINJA_POS_X};
+  const std::vector<double> ninja_frost_position = {NINJA_FROST_POS_Y, NINJA_FROST_POS_X};
+
+  for (int iview = 0; iview < 2; ++iview) {
+    position.at(iview) = bm2_position.at(iview)
+      + baby_mind_position.at(iview)
+      - ninja_overall_position.at(iview)
+      - ninja_frost_position.at(iview);
+  }
+
+  return position;
+}
+
 std::vector<double> CalculateExpectedPosition(NTBMSummary *ntbm, int itrack, double z_shift) {
 
   // Pre reconstructed position/direction in BM coordinate
@@ -466,12 +488,17 @@ FrostTrackCandidates CollectFrostTrackCandidates(NTBMSummary* ntbm, int itrack,
     for (std::size_t j = 0; j < ybunch.size(); ++j) {
       const double frost_y = ybunch.at(j);
       const double expected_y = hit_expected_position.at(B2View::kSideView);
-      const double dy = expected_y - frost_y;
+      const std::vector<double> bm2_position_frost =
+        CalculateBabyMindSecondLayerPositionInFrostCoordinate(ntbm, itrack);
+      const double bm2_y = bm2_position_frost.at(B2View::kSideView);
+      const double dy_tangent = bm2_y - frost_y;
+
+      const double dy = frost_y - expected_y;
       if (std::fabs(dy) < TEMPORAL_ALLOWANCE[B2View::kSideView]) {
         candidates.frost_y_candidates.push_back(frost_y);
         candidates.expected_y_candidates.push_back(expected_y);
         candidates.difference_y_candidates.push_back(dy);
-        candidates.tangent_y_candidates.push_back(dy / dz_y);
+        candidates.tangent_y_candidates.push_back(dy_tangent / dz_y);
       }
     }
   }
@@ -481,12 +508,17 @@ FrostTrackCandidates CollectFrostTrackCandidates(NTBMSummary* ntbm, int itrack,
     for (std::size_t j = 0; j < xbunch.size(); ++j) {
       const double frost_x = xbunch.at(j);
       const double expected_x = hit_expected_position.at(B2View::kTopView);
-      const double dx = expected_x - frost_x;
+      const std::vector<double> bm2_position_frost =
+        CalculateBabyMindSecondLayerPositionInFrostCoordinate(ntbm, itrack);
+      const double bm2_x = bm2_position_frost.at(B2View::kTopView);
+      const double dx_tangent = bm2_x - frost_x;
+
+      const double dx = frost_x - expected_x;
       if (std::fabs(dx) < TEMPORAL_ALLOWANCE[B2View::kTopView]) {
         candidates.frost_x_candidates.push_back(frost_x);
         candidates.expected_x_candidates.push_back(expected_x);
         candidates.difference_x_candidates.push_back(dx);
-        candidates.tangent_x_candidates.push_back(dx / dz_x);
+        candidates.tangent_x_candidates.push_back(dx_tangent / dz_x);
       }
     }
   }
@@ -760,7 +792,7 @@ double MyFuncCalculateTrackLength(const B2TrackSummary* track, double ax, double
 }
 
 void TransferBabyMindTrackInfo(const B2SpillSummary &spill_summary, NTBMSummary *ntbm_summary, int datatype,
-			       B2Dimension &dimension) {
+			       B2Dimension &dimension, std::string fhc_rhc) {
 
   int itrack = 0;
 
@@ -838,10 +870,20 @@ void TransferBabyMindTrackInfo(const B2SpillSummary &spill_summary, NTBMSummary 
       ntbm_summary->SetTrackLengthTotal(itrack, track->GetTrackLengthTotal());
       double nll_plus = track->GetNegativeLogLikelihoodPlus();
       double nll_minus = track->GetNegativeLogLikelihoodMinus();
-      if ( nll_minus - nll_plus >= 4 )
-	ntbm_summary->SetCharge(itrack, 1);
-      else
-	ntbm_summary->SetCharge(itrack, -1);
+      ntbm_summary->SetNegativeLogLikelihoodPlus(itrack, nll_plus);
+      ntbm_summary->SetNegativeLogLikelihoodMinus(itrack, nll_minus);
+      if(fhc_rhc == "FHC") {
+        if ( nll_minus - nll_plus >= 4 )
+          ntbm_summary->SetCharge(itrack, 1);
+        else
+          ntbm_summary->SetCharge(itrack, -1);
+      }else if(fhc_rhc == "RHC") {
+        if ( nll_plus - nll_minus >= 4 ) //temporal threshold, to be optimized using MC!!!
+          ntbm_summary->SetCharge(itrack, -1);
+        else
+          ntbm_summary->SetCharge(itrack, 1);
+      }
+
       ntbm_summary->SetBunch(itrack, track->GetBunch());
 
       TVector3 final_position = track->GetFinalPosition().GetValue();
@@ -901,8 +943,8 @@ int main(int argc, char *argv[]) {
   B2Dimension dimension_((std::string)"/opt/wagasci_mc/WagasciMC/etc/wagasci/b2/geometry");
 
   logging::trivial::severity_level log_level = logging::trivial::info;
-  if (argc == 6) {
-    log_level = ParseLogLevel(argv[5]);
+  if (argc == 7) {
+    log_level = ParseLogLevel(argv[6]);
   }
 
   logging::core::get()->set_filter(
@@ -910,12 +952,13 @@ int main(int argc, char *argv[]) {
 
   BOOST_LOG_TRIVIAL(info) << "==========FROST-Baby MIND Track Matching Start==========";
 
-  if ( argc != 5 && argc != 6 ) {
+  if ( argc != 6 && argc != 7 ) {
     std::cerr << "Usage : " << argv[0]
               << " <input B2 file path>"
               << " <output ROOT file path>"
               << " <z shift>"
               << " <MC(0)/data(1)>"
+              << " <FHC/RHC> "
               << " [trace|debug|info|warning|error|fatal]"
               << std::endl;
     std::exit(1);
@@ -943,6 +986,15 @@ int main(int argc, char *argv[]) {
 
     double z_shift = std::stof(argv[3]);
     int datatype = std::stoi(argv[4]);
+    std::string fhc_rhc = argv[5];
+
+    if (datatype != 0 && datatype != 1) {
+      throw std::invalid_argument("Invalid data type. Use 0 for MC and 1 for data.");
+    }
+
+    if (fhc_rhc != "FHC" && fhc_rhc != "RHC") {
+      throw std::invalid_argument("Invalid FHC/RHC option. Use 'FHC' or 'RHC'.");
+    }
 
     int nspill = 0;
     std::vector<std::vector<TrackMatchRow>> spill_match_rows;
@@ -1003,7 +1055,7 @@ int main(int argc, char *argv[]) {
       // Extrapolate BabyMIND tracks to the NINJA FROST position
       // and get the positions to match each BabyMIND track
       if ( number_of_tracks > 0 ) {
-	      TransferBabyMindTrackInfo(input_spill_summary, my_ntbm, datatype, dimension_);
+	      TransferBabyMindTrackInfo(input_spill_summary, my_ntbm, datatype, dimension_, fhc_rhc);
 
         std::vector<TrackMatchRow> rows;
 
@@ -1035,15 +1087,23 @@ int main(int argc, char *argv[]) {
             BABYMIND_POS_Z + BM_SECOND_LAYER_POS - NINJA_POS_Z_FROST - NINJA_FROST_POS_Z
             - (2 * B2View::kTopView - 1) * 10. + z_shift;
 
-          if (nearest_y.found) {
-            row.frost_y = nearest_y.frost_position;
-            row.dy = nearest_y.diff;
-            row.tangent_y = nearest_y.diff / dz_y;
-          }
+          const std::vector<double> bm2_position_frost =
+            CalculateBabyMindSecondLayerPositionInFrostCoordinate(my_ntbm, ibmtrack);
+
           if (nearest_x.found) {
             row.frost_x = nearest_x.frost_position;
             row.dx = nearest_x.diff;
-            row.tangent_x = nearest_x.diff / dz_x;
+            row.tangent_x =
+              (bm2_position_frost.at(B2View::kTopView) - row.frost_x) / dz_x;
+            row.dtanx = row.tangent_x - row.baby_mind_tangent_x;
+          }
+
+          if (nearest_y.found) {
+            row.frost_y = nearest_y.frost_position;
+            row.dy = nearest_y.diff;
+            row.tangent_y =
+              (bm2_position_frost.at(B2View::kSideView) - row.frost_y) / dz_y;
+            row.dtany = row.tangent_y - row.baby_mind_tangent_y;
           }
 
           const bool hit_expected = NinjaHitExpected(my_ntbm, ibmtrack, z_shift);
@@ -1119,6 +1179,8 @@ int main(int argc, char *argv[]) {
     std::vector<Double_t> trackmatch_dy;
     std::vector<Double_t> trackmatch_tangent_x;
     std::vector<Double_t> trackmatch_tangent_y;
+    std::vector<Double_t> trackmatch_dtanx;
+    std::vector<Double_t> trackmatch_dtany;
     std::vector<Int_t> trackmatch_frost_is_hit;
     Double_t matchinfo_spill_pot = B2_NON_INITIALIZED_VALUE;
     Double_t matchinfo_bunch_pot[NUMBER_OF_BUNCHES];
@@ -1149,6 +1211,8 @@ int main(int argc, char *argv[]) {
     match_info_out->Branch("trackmatch_dy", &trackmatch_dy);
     match_info_out->Branch("trackmatch_tangent_x", &trackmatch_tangent_x);
     match_info_out->Branch("trackmatch_tangent_y", &trackmatch_tangent_y);
+    match_info_out->Branch("trackmatch_dtanx", &trackmatch_dtanx);
+    match_info_out->Branch("trackmatch_dtany", &trackmatch_dtany);
     match_info_out->Branch("trackmatch_frost_is_hit", &trackmatch_frost_is_hit);
     match_info_out->Branch("spill_pot", &matchinfo_spill_pot, "spill_pot/D");
     match_info_out->Branch("bunch_pot", matchinfo_bunch_pot,
@@ -1190,6 +1254,8 @@ int main(int argc, char *argv[]) {
       trackmatch_dy.clear();
       trackmatch_tangent_x.clear();
       trackmatch_tangent_y.clear();
+      trackmatch_dtanx.clear();
+      trackmatch_dtany.clear();
       trackmatch_frost_is_hit.clear();
 
       if (i < ntbm_tree->GetEntries()) {
@@ -1234,6 +1300,8 @@ int main(int argc, char *argv[]) {
       trackmatch_dy.reserve(rows.size());
       trackmatch_tangent_x.reserve(rows.size());
       trackmatch_tangent_y.reserve(rows.size());
+      trackmatch_dtanx.reserve(rows.size());
+      trackmatch_dtany.reserve(rows.size());
       trackmatch_frost_is_hit.reserve(rows.size());
 
       for (const auto &row : rows) {
@@ -1251,6 +1319,8 @@ int main(int argc, char *argv[]) {
         trackmatch_dy.push_back(row.dy);
         trackmatch_tangent_x.push_back(row.tangent_x);
         trackmatch_tangent_y.push_back(row.tangent_y);
+        trackmatch_dtanx.push_back(row.dtanx);
+        trackmatch_dtany.push_back(row.dtany);
 
         Int_t frost_is_hit_value = -1;
         const int bunch = row.frost_match_bunch; // 1..8

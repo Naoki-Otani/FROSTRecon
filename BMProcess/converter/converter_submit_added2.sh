@@ -3,13 +3,13 @@
 set -eu
 
 # ========= path settings =========
-BM_DIR="/group/nu/ninja/work/otani/FROSTReconData/BMdata/2-BMBSD_fixed"
+BM_DIR="/group/nu/ninja/work/otani/FROSTReconData/BMdata/2-BMBSD_added2"
 # BM_DIR="/hsm/nu/wagasci/dhirata/bm_recon/2-BMBSD"
-PM_DIR="/group/nu/ninja/work/otani/FROSTReconData/BMdata/4-PMBSD_BMformat"
-OUT_DIR="/group/nu/ninja/work/otani/FROSTReconData/BMdata/3-BMPMconverter/out"
-LOG_DIR="/group/nu/ninja/work/otani/FROSTReconData/BMdata/3-BMPMconverter/log"
-ROOT_OUT_DIR="/group/nu/ninja/work/otani/FROSTReconData/BMdata/3-BMPMconverter"
-TMP_DIR="/group/nu/ninja/work/otani/FROSTReconData/BMdata/3-BMPMconverter/tmp"
+PM_DIR="/group/nu/ninja/work/otani/FROSTReconData/BMdata/4-PMBSD_BMformat_added2"
+OUT_DIR="/group/nu/ninja/work/otani/FROSTReconData/BMdata/3-BMPMconverter_added2/out"
+LOG_DIR="/group/nu/ninja/work/otani/FROSTReconData/BMdata/3-BMPMconverter_added2/log"
+ROOT_OUT_DIR="/group/nu/ninja/work/otani/FROSTReconData/BMdata/3-BMPMconverter_added2"
+TMP_DIR="/group/nu/ninja/work/otani/FROSTReconData/BMdata/3-BMPMconverter_added2/tmp"
 
 SIF="/home/nu/notani/wagasci_ana_0.2.4.sif"
 CONVERTER="/opt/wagasci_data_handling/WagasciConverter/bin/Converter"
@@ -18,7 +18,7 @@ GEOMETRY_DIR="/opt/wagasci_mc/WagasciMC/etc/wagasci/b2/geometry"
 QUEUE="s"
 
 # ========= prepare directories =========
-mkdir -p "$OUT_DIR" "$LOG_DIR" "$ROOT_OUT_DIR" "$TMP_DIR"
+mkdir -p "$ROOT_OUT_DIR" "$OUT_DIR" "$LOG_DIR" "$TMP_DIR"
 
 # ========= loop over all BMBSD files =========
 for bm_file in "$BM_DIR"/BMBSD_*.root; do

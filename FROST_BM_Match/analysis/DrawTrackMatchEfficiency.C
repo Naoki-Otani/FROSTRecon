@@ -63,10 +63,16 @@
 //   2. FROST is_hit efficiency vs angle
 //   3. dx distribution for all denominator tracks
 //   4. dy distribution for all denominator tracks
-//   5-13.  dx distributions in bins of atan(abs(tan_x)) [deg]
-//   14-22. dx distributions in bins of atan(sqrt(tan_x^2 + tan_y^2)) [deg]
-//   23-31. dy distributions in bins of atan(abs(tan_y)) [deg]
-//   32-40. dy distributions in bins of atan(sqrt(tan_x^2 + tan_y^2)) [deg]
+//   5. dtanx distribution for all denominator tracks
+//   6. dtany distribution for all denominator tracks
+//   7-15.   dx distributions in bins of atan(abs(tan_x)) [deg]
+//   16-24.  dx distributions in bins of atan(sqrt(tan_x^2 + tan_y^2)) [deg]
+//   25-33.  dy distributions in bins of atan(abs(tan_y)) [deg]
+//   34-42.  dy distributions in bins of atan(sqrt(tan_x^2 + tan_y^2)) [deg]
+//   43-51.  dtanx distributions in bins of atan(abs(tan_x)) [deg]
+//   52-60.  dtanx distributions in bins of atan(sqrt(tan_x^2 + tan_y^2)) [deg]
+//   61-69.  dtany distributions in bins of atan(abs(tan_y)) [deg]
+//   70-78.  dtany distributions in bins of atan(sqrt(tan_x^2 + tan_y^2)) [deg]
 //
 // The terminal output is also written to the specified log file.
 // ------------------------------------------------------------
@@ -117,7 +123,8 @@ void DrawTrackMatchEfficiency(
     const char *inputDir = "/group/nu/ninja/work/otani/FROSTReconData/BM_FROST/rootfile_after_TrackMatch",
     const char *outputPdfPath = "/group/nu/ninja/work/otani/FROSTReconData/BM_FROST/analysis_plot/efficiency.pdf",
     const char *logFilePath = "/group/nu/ninja/work/otani/FROSTReconData/BM_FROST/analysis_plot/efficiency.log",
-    const std::vector<std::string> &excludedFiles = std::vector<std::string>{"BMPM_track_2025-11-29_13-46-59_Run0_afterTrackMatch.root", "BMPM_track_2025-11-30_13-11-36_Run0_afterTrackMatch.root"}
+    const std::vector<std::string> &excludedFiles = std::vector<std::string>
+    {"BMPM_track_2025-11-29_13-46-59_Run0_afterTrackMatch.root", "BMPM_track_2025-11-30_13-11-36_Run0_afterTrackMatch.root"}
     ) {
 
   std::ofstream logFile(logFilePath);
@@ -192,6 +199,8 @@ void DrawTrackMatchEfficiency(
   std::vector<double> *trackmatch_expected_y = nullptr;
   std::vector<double> *trackmatch_dx = nullptr;
   std::vector<double> *trackmatch_dy = nullptr;
+  std::vector<double> *trackmatch_dtanx = nullptr;
+  std::vector<double> *trackmatch_dtany = nullptr;
   std::vector<double> *trackmatch_baby_mind_tangent_x = nullptr;
   std::vector<double> *trackmatch_baby_mind_tangent_y = nullptr;
   std::vector<int> *trackmatch_frost_is_hit = nullptr;
@@ -204,6 +213,8 @@ void DrawTrackMatchEfficiency(
   chain.SetBranchAddress("trackmatch_expected_y", &trackmatch_expected_y);
   chain.SetBranchAddress("trackmatch_dx", &trackmatch_dx);
   chain.SetBranchAddress("trackmatch_dy", &trackmatch_dy);
+  chain.SetBranchAddress("trackmatch_dtanx", &trackmatch_dtanx);
+  chain.SetBranchAddress("trackmatch_dtany", &trackmatch_dtany);
   chain.SetBranchAddress("trackmatch_baby_mind_tangent_x", &trackmatch_baby_mind_tangent_x);
   chain.SetBranchAddress("trackmatch_baby_mind_tangent_y", &trackmatch_baby_mind_tangent_y);
   chain.SetBranchAddress("trackmatch_frost_is_hit", &trackmatch_frost_is_hit);
@@ -221,12 +232,18 @@ void DrawTrackMatchEfficiency(
   // dx/dy distributions for all denominator tracks.
   auto *hDxAll = new TH1D("hDxAll", ";dx [mm];Number of events", 200, -500.0, 500.0);
   auto *hDyAll = new TH1D("hDyAll", ";dy [mm];Number of events", 200, -500.0, 500.0);
+  auto *hDtanxAll = new TH1D("hDtanxAll", ";dtanx;Number of events", 200, -0.25, 0.25);
+  auto *hDtanyAll = new TH1D("hDtanyAll", ";dtany;Number of events", 200, -0.25, 0.25);
 
   // dx distributions binned by atan(abs(tan_x)) [deg].
   std::vector<TH1D*> hDxByAngleX;
   std::vector<TH1D*> hDxByAngleTot;
   std::vector<TH1D*> hDyByAngleY;
   std::vector<TH1D*> hDyByAngleTot;
+  std::vector<TH1D*> hDtanxByAngleX;
+  std::vector<TH1D*> hDtanxByAngleTot;
+  std::vector<TH1D*> hDtanyByAngleY;
+  std::vector<TH1D*> hDtanyByAngleTot;
   for (int i = 0; i < kNBins; ++i) {
     hDxByAngleX.push_back(new TH1D(
         Form("hDx_bin%d", i),
@@ -244,6 +261,22 @@ void DrawTrackMatchEfficiency(
         Form("hDyTot_bin%d", i),
         ";dy [mm];Number of events",
         200, -500.0, 500.0));
+    hDtanxByAngleX.push_back(new TH1D(
+        Form("hDtanx_bin%d", i),
+        ";dtanx;Number of events",
+        200, -0.25, 0.25));
+    hDtanxByAngleTot.push_back(new TH1D(
+        Form("hDtanxTot_bin%d", i),
+        ";dtanx;Number of events",
+        200, -0.25, 0.25));
+    hDtanyByAngleY.push_back(new TH1D(
+        Form("hDtany_bin%d", i),
+        ";dtany;Number of events",
+        200, -0.25, 0.25));
+    hDtanyByAngleTot.push_back(new TH1D(
+        Form("hDtanyTot_bin%d", i),
+        ";dtany;Number of events",
+        200, -0.25, 0.25));
   }
 
   hDen->Sumw2();
@@ -252,11 +285,17 @@ void DrawTrackMatchEfficiency(
   hNumIsHit->Sumw2();
   hDxAll->Sumw2();
   hDyAll->Sumw2();
+  hDtanxAll->Sumw2();
+  hDtanyAll->Sumw2();
   for (int i = 0; i < kNBins; ++i) {
     hDxByAngleX[i]->Sumw2();
     hDxByAngleTot[i]->Sumw2();
     hDyByAngleY[i]->Sumw2();
     hDyByAngleTot[i]->Sumw2();
+    hDtanxByAngleX[i]->Sumw2();
+    hDtanxByAngleTot[i]->Sumw2();
+    hDtanyByAngleY[i]->Sumw2();
+    hDtanyByAngleTot[i]->Sumw2();
   }
 
   const Long64_t nEntries = chain.GetEntries();
@@ -273,6 +312,8 @@ void DrawTrackMatchEfficiency(
         !trackmatch_expected_y ||
         !trackmatch_dx ||
         !trackmatch_dy ||
+        !trackmatch_dtanx ||
+        !trackmatch_dtany ||
         !trackmatch_baby_mind_tangent_x ||
         !trackmatch_baby_mind_tangent_y ||
         !trackmatch_frost_is_hit) {
@@ -285,6 +326,8 @@ void DrawTrackMatchEfficiency(
         trackmatch_expected_y->size() != nTracks ||
         trackmatch_dx->size() != nTracks ||
         trackmatch_dy->size() != nTracks ||
+        trackmatch_dtanx->size() != nTracks ||
+        trackmatch_dtany->size() != nTracks ||
         trackmatch_baby_mind_tangent_x->size() != nTracks ||
         trackmatch_baby_mind_tangent_y->size() != nTracks ||
         trackmatch_frost_is_hit->size() != nTracks) {
@@ -300,6 +343,8 @@ void DrawTrackMatchEfficiency(
       const double expectedY = trackmatch_expected_y->at(iTrack);
       const double dx = trackmatch_dx->at(iTrack);
       const double dy = trackmatch_dy->at(iTrack);
+      const double dtanx = trackmatch_dtanx->at(iTrack);
+      const double dtany = trackmatch_dtany->at(iTrack);
       const double tx = trackmatch_baby_mind_tangent_x->at(iTrack);
       const double ty = trackmatch_baby_mind_tangent_y->at(iTrack);
 
@@ -325,28 +370,34 @@ void DrawTrackMatchEfficiency(
       hDenIsHit->Fill(angleDeg);
       hDxAll->Fill(dx);
       hDyAll->Fill(dy);
+      hDtanxAll->Fill(dtanx);
+      hDtanyAll->Fill(dtany);
 
       for (int iBin = 0; iBin < kNBins; ++iBin) {
         if (angleXDeg >= kAngleBins[iBin] && angleXDeg < kAngleBins[iBin + 1]) {
           hDxByAngleX[iBin]->Fill(dx);
+          hDtanxByAngleX[iBin]->Fill(dtanx);
           break;
         }
       }
       for (int iBin = 0; iBin < kNBins; ++iBin) {
         if (angleDeg >= kAngleBins[iBin] && angleDeg < kAngleBins[iBin + 1]) {
           hDxByAngleTot[iBin]->Fill(dx);
+          hDtanxByAngleTot[iBin]->Fill(dtanx);
           break;
         }
       }
       for (int iBin = 0; iBin < kNBins; ++iBin) {
         if (angleYDeg >= kAngleBins[iBin] && angleYDeg < kAngleBins[iBin + 1]) {
           hDyByAngleY[iBin]->Fill(dy);
+          hDtanyByAngleY[iBin]->Fill(dtany);
           break;
         }
       }
       for (int iBin = 0; iBin < kNBins; ++iBin) {
         if (angleDeg >= kAngleBins[iBin] && angleDeg < kAngleBins[iBin + 1]) {
           hDyByAngleTot[iBin]->Fill(dy);
+          hDtanyByAngleTot[iBin]->Fill(dtany);
           break;
         }
       }
@@ -646,7 +697,25 @@ void DrawTrackMatchEfficiency(
   hDyAll->Draw("HIST");
   canvas->SaveAs(outputPdfPath);
 
-  // Pages 5+: dx by atan(|tan_x|) bins.
+  // Page 5: dtanx for all denominator tracks.
+  canvas->Clear();
+  canvas->SetGrid();
+  gStyle->SetOptStat(1110);
+  hDtanxAll->SetTitle("dtanx distribution for all angles");
+  hDtanxAll->SetLineWidth(2);
+  hDtanxAll->Draw("HIST");
+  canvas->SaveAs(outputPdfPath);
+
+  // Page 6: dtany for all denominator tracks.
+  canvas->Clear();
+  canvas->SetGrid();
+  gStyle->SetOptStat(1110);
+  hDtanyAll->SetTitle("dtany distribution for all angles");
+  hDtanyAll->SetLineWidth(2);
+  hDtanyAll->Draw("HIST");
+  canvas->SaveAs(outputPdfPath);
+
+  // Pages 7+: dx by atan(|tan_x|) bins.
   for (int i = 0; i < kNBins; ++i) {
     canvas->Clear();
     canvas->SetGrid();
@@ -685,7 +754,7 @@ void DrawTrackMatchEfficiency(
     canvas->SaveAs(outputPdfPath);
   }
 
-  // Final pages: dy by atan(sqrt(tan_x^2 + tan_y^2)) bins.
+  // Pages after that: dy by atan(sqrt(tan_x^2 + tan_y^2)) bins.
   for (int i = 0; i < kNBins; ++i) {
     canvas->Clear();
     canvas->SetGrid();
@@ -695,6 +764,58 @@ void DrawTrackMatchEfficiency(
              kAngleBins[i], kAngleBins[i + 1]));
     hDyByAngleTot[i]->SetLineWidth(2);
     hDyByAngleTot[i]->Draw("HIST");
+    canvas->SaveAs(outputPdfPath);
+  }
+
+  // Pages after that: dtanx by atan(|tan_x|) bins.
+  for (int i = 0; i < kNBins; ++i) {
+    canvas->Clear();
+    canvas->SetGrid();
+    gStyle->SetOptStat(1110);
+    hDtanxByAngleX[i]->SetTitle(
+        Form("dtanx distribution: %.0f #leq #theta_{x} < %.0f deg",
+             kAngleBins[i], kAngleBins[i + 1]));
+    hDtanxByAngleX[i]->SetLineWidth(2);
+    hDtanxByAngleX[i]->Draw("HIST");
+    canvas->SaveAs(outputPdfPath);
+  }
+
+  // Pages after that: dtanx by atan(sqrt(tan_x^2 + tan_y^2)) bins.
+  for (int i = 0; i < kNBins; ++i) {
+    canvas->Clear();
+    canvas->SetGrid();
+    gStyle->SetOptStat(1110);
+    hDtanxByAngleTot[i]->SetTitle(
+        Form("dtanx distribution: %.0f #leq #theta < %.0f deg",
+             kAngleBins[i], kAngleBins[i + 1]));
+    hDtanxByAngleTot[i]->SetLineWidth(2);
+    hDtanxByAngleTot[i]->Draw("HIST");
+    canvas->SaveAs(outputPdfPath);
+  }
+
+  // Pages after that: dtany by atan(|tan_y|) bins.
+  for (int i = 0; i < kNBins; ++i) {
+    canvas->Clear();
+    canvas->SetGrid();
+    gStyle->SetOptStat(1110);
+    hDtanyByAngleY[i]->SetTitle(
+        Form("dtany distribution: %.0f #leq #theta_{y} < %.0f deg",
+             kAngleBins[i], kAngleBins[i + 1]));
+    hDtanyByAngleY[i]->SetLineWidth(2);
+    hDtanyByAngleY[i]->Draw("HIST");
+    canvas->SaveAs(outputPdfPath);
+  }
+
+  // Final pages: dtany by atan(sqrt(tan_x^2 + tan_y^2)) bins.
+  for (int i = 0; i < kNBins; ++i) {
+    canvas->Clear();
+    canvas->SetGrid();
+    gStyle->SetOptStat(1110);
+    hDtanyByAngleTot[i]->SetTitle(
+        Form("dtany distribution: %.0f #leq #theta < %.0f deg",
+             kAngleBins[i], kAngleBins[i + 1]));
+    hDtanyByAngleTot[i]->SetLineWidth(2);
+    hDtanyByAngleTot[i]->Draw("HIST");
     canvas->SaveAs(outputPdfPath);
   }
 
@@ -717,10 +838,16 @@ void DrawTrackMatchEfficiency(
   delete hDenIsHit;
   delete hDxAll;
   delete hDyAll;
+  delete hDtanxAll;
+  delete hDtanyAll;
   for (int i = 0; i < kNBins; ++i) {
     delete hDxByAngleX[i];
     delete hDxByAngleTot[i];
     delete hDyByAngleY[i];
     delete hDyByAngleTot[i];
+    delete hDtanxByAngleX[i];
+    delete hDtanxByAngleTot[i];
+    delete hDtanyByAngleY[i];
+    delete hDtanyByAngleTot[i];
   }
 }

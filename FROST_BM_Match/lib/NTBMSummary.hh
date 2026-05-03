@@ -143,6 +143,14 @@ public :
 
   double GetTrackLengthTotal(int track) const;
 
+  void SetNegativeLogLikelihoodMinus(int track, double negative_log_likelihood_minus);
+
+  double GetNegativeLogLikelihoodMinus(int track) const;
+
+  void SetNegativeLogLikelihoodPlus(int track, double negative_log_likelihood_plus);
+
+  double GetNegativeLogLikelihoodPlus(int track) const;
+
   void SetCharge(int track, int charge);
 
   int GetCharge(int track) const;
@@ -299,6 +307,10 @@ private :
   std::vector<int> baby_mind_maximum_plane_;
   ///> WAGASCI total material length
   std::vector<double> track_length_total_;
+  ///> Negative log-likelihood under the q=−1 charge hypothesis, used for charge identification
+  std::vector<double> negative_log_likelihood_minus_;
+  ///> Negative log-likelihood under the q=+1 charge hypothesis, used for charge identification
+  std::vector<double> negative_log_likelihood_plus_;
   ///> Baby MIND reconstructed charge (assuming muon +/-)
   std::vector<int> charge_;
   ///> Baby MIND reconstructed track direction (+/-)
@@ -325,9 +337,9 @@ private :
   std::vector<std::vector<double>> expected_y_candidates_;
   ///> BM extrapolated x positions corresponding to frost_x_candidates_
   std::vector<std::vector<double>> expected_x_candidates_;
-  ///> expected_y_candidates_ - frost_y_candidates_
+  ///> frost_y_candidates_ - expected_y_candidates_
   std::vector<std::vector<double>> difference_y_candidates_;
-  ///> expected_x_candidates_ - frost_x_candidates_
+  ///> frost_x_candidates_ - expected_x_candidates_
   std::vector<std::vector<double>> difference_x_candidates_;
   ///> Tangent candidates in y-z from BM and FROST positions
   std::vector<std::vector<double>> tangent_y_candidates_;
