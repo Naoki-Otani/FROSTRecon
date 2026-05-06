@@ -1,9 +1,15 @@
 #ifndef NTBMCONST_HH
 #define NTBMCONST_HH
 
-//HitConverter for FROST
+// HitConverter for FROST
 static const Int_t SPILL_MOD = 32768;      // 2^15
 static const Int_t MAX_TIME_DIFF = 3000;   // sec allowance between BM and FROST unixtime
+
+// TrackMatch for FROST
+// Scale factors for FROST reconstructed positions in real data.
+// MC positions are not scaled.
+constexpr double FROST_DATA_X_POSITION_SCALE = 1321.2 / 1320.0;
+constexpr double FROST_DATA_Y_POSITION_SCALE = 1401.5 / 1400.0;
 
 ///> Default non initialized value
 static const int NTBM_NON_INITIALIZED_VALUE = -2;

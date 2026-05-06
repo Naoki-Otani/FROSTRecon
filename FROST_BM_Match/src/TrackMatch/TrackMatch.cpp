@@ -42,6 +42,7 @@
 #include <B2EmulsionSummary.hh>
 #include <B2Pdg.hh>
 #include "NTBMSummary.hh"
+#include "NTBMConst.hh"
 
 #include "TrackMatch.hpp"
 
@@ -101,6 +102,25 @@ bool IsFrostHitAtBunch(const std::vector<int> *is_hit, int bm_bunch) {
   return is_hit->at(frost_bunch_index) == 1;
 }
 
+double GetFrostPositionScale(int view, int datatype) {
+  if (datatype != B2DataType::kRealData) {
+    return 1.0;
+  }
+
+  if (view == B2View::kTopView) {
+    return FROST_DATA_X_POSITION_SCALE;
+  }
+  if (view == B2View::kSideView) {
+    return FROST_DATA_Y_POSITION_SCALE;
+  }
+
+  return 1.0;
+}
+
+double CorrectFrostPosition(double frost_position, int view, int datatype) {
+  return frost_position * GetFrostPositionScale(view, datatype);
+}
+
 FrostMatchTrees OpenFrostMatchTrees(TFile *file) {
   FrostMatchTrees trees;
   trees.frost_match = dynamic_cast<TTree*>(file->Get("frost_match"));
@@ -115,7 +135,8 @@ NearestFrostPositionResult FindNearestFrostPosition(const FrostEntryData &frost,
                                                     int bm_bunch,
                                                     int view,
                                                     double expected_position,
-                                                    const std::vector<int> *is_hit) {
+                                                    const std::vector<int> *is_hit,
+                                                    int datatype) {
   NearestFrostPositionResult result;
 
   const int frost_bunch_index = bm_bunch - 1;  // BM bunch: 1..8, FROST index: 0..7
@@ -145,11 +166,13 @@ NearestFrostPositionResult FindNearestFrostPosition(const FrostEntryData &frost,
 
   double best_abs_diff = std::numeric_limits<double>::max();
   for (std::size_t i = 0; i < positions.size(); ++i) {
-    const double diff =  positions.at(i) - expected_position;
+    const double frost_position =
+      CorrectFrostPosition(positions.at(i), view, datatype);
+    const double diff = frost_position - expected_position;
     const double abs_diff = std::fabs(diff);
     if (!result.found || abs_diff < best_abs_diff) {
       result.found = true;
-      result.frost_position = positions.at(i);
+      result.frost_position = frost_position;
       result.diff = diff;
       best_abs_diff = abs_diff;
     }
@@ -478,7 +501,8 @@ bool NinjaHitExpected(NTBMSummary *ntbm, int itrack, double z_shift) {
 FrostTrackCandidates CollectFrostTrackCandidates(NTBMSummary* ntbm, int itrack,
                                                  const FrostEntryData &frost,
                                                  double z_shift,
-                                                 const std::vector<int> *is_hit) {
+                                                 const std::vector<int> *is_hit,
+                                                 int datatype) {
   FrostTrackCandidates candidates;
 
   const std::vector<double> hit_expected_position =
@@ -510,7 +534,8 @@ FrostTrackCandidates CollectFrostTrackCandidates(NTBMSummary* ntbm, int itrack,
   if (frost.y_rec && frost_bunch_index < static_cast<int>(frost.y_rec->size())) {
     const std::vector<double> &ybunch = frost.y_rec->at(frost_bunch_index);
     for (std::size_t j = 0; j < ybunch.size(); ++j) {
-      const double frost_y = ybunch.at(j);
+      const double frost_y =
+        CorrectFrostPosition(ybunch.at(j), B2View::kSideView, datatype);
       const double expected_y = hit_expected_position.at(B2View::kSideView);
       const std::vector<double> bm2_position_frost =
         CalculateBabyMindSecondLayerPositionInFrostCoordinate(ntbm, itrack);
@@ -528,7 +553,8 @@ FrostTrackCandidates CollectFrostTrackCandidates(NTBMSummary* ntbm, int itrack,
   if (frost.x_rec && frost_bunch_index < static_cast<int>(frost.x_rec->size())) {
     const std::vector<double> &xbunch = frost.x_rec->at(frost_bunch_index);
     for (std::size_t j = 0; j < xbunch.size(); ++j) {
-      const double frost_x = xbunch.at(j);
+      const double frost_x =
+        CorrectFrostPosition(xbunch.at(j), B2View::kTopView, datatype);
       const double expected_x = hit_expected_position.at(B2View::kTopView);
       const std::vector<double> bm2_position_frost =
         CalculateBabyMindSecondLayerPositionInFrostCoordinate(ntbm, itrack);
@@ -1097,10 +1123,10 @@ int main(int argc, char *argv[]) {
           const int bm_bunch = my_ntbm->GetBunch(ibmtrack);
           const NearestFrostPositionResult nearest_y =
             FindNearestFrostPosition(frost_entry, bm_bunch, B2View::kSideView,
-                                     row.expected_y, is_hit);
+                                     row.expected_y, is_hit, datatype);
           const NearestFrostPositionResult nearest_x =
             FindNearestFrostPosition(frost_entry, bm_bunch, B2View::kTopView,
-                                     row.expected_x, is_hit);
+                                     row.expected_x, is_hit, datatype);
 
           const double dz_y =
             BABYMIND_POS_Z + BM_SECOND_LAYER_POS - NINJA_POS_Z_FROST - NINJA_FROST_POS_Z
@@ -1134,7 +1160,7 @@ int main(int argc, char *argv[]) {
           }
 
           const FrostTrackCandidates candidates =
-            CollectFrostTrackCandidates(my_ntbm, ibmtrack, frost_entry, z_shift, is_hit);
+            CollectFrostTrackCandidates(my_ntbm, ibmtrack, frost_entry, z_shift, is_hit, datatype);
           const FrostMatchCount match_count =
             CountAcceptedFrostMatches(candidates);
 
