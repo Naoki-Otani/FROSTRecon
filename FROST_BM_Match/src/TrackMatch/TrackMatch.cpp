@@ -92,6 +92,15 @@ struct NearestFrostPositionResult {
   double diff = B2_NON_INITIALIZED_VALUE;
 };
 
+bool IsFrostHitAtBunch(const std::vector<int> *is_hit, int bm_bunch) {
+  // BM bunch is 1..8, while FROST is_hit index is 0..7.
+  const int frost_bunch_index = bm_bunch - 1;
+  if (!is_hit) return false;
+  if (frost_bunch_index < 0) return false;
+  if (frost_bunch_index >= static_cast<int>(is_hit->size())) return false;
+  return is_hit->at(frost_bunch_index) == 1;
+}
+
 FrostMatchTrees OpenFrostMatchTrees(TFile *file) {
   FrostMatchTrees trees;
   trees.frost_match = dynamic_cast<TTree*>(file->Get("frost_match"));
@@ -105,11 +114,17 @@ FrostMatchTrees OpenFrostMatchTrees(TFile *file) {
 NearestFrostPositionResult FindNearestFrostPosition(const FrostEntryData &frost,
                                                     int bm_bunch,
                                                     int view,
-                                                    double expected_position) {
+                                                    double expected_position,
+                                                    const std::vector<int> *is_hit) {
   NearestFrostPositionResult result;
 
   const int frost_bunch_index = bm_bunch - 1;  // BM bunch: 1..8, FROST index: 0..7
   if (frost_bunch_index < 0 || frost_bunch_index >= 8) {
+    return result;
+  }
+
+  // Do not make a nearest-hit match unless FROST has a hit in this bunch.
+  if (!IsFrostHitAtBunch(is_hit, bm_bunch)) {
     return result;
   }
 
@@ -461,7 +476,9 @@ bool NinjaHitExpected(NTBMSummary *ntbm, int itrack, double z_shift) {
 }
 
 FrostTrackCandidates CollectFrostTrackCandidates(NTBMSummary* ntbm, int itrack,
-                                                 const FrostEntryData &frost, double z_shift) {
+                                                 const FrostEntryData &frost,
+                                                 double z_shift,
+                                                 const std::vector<int> *is_hit) {
   FrostTrackCandidates candidates;
 
   const std::vector<double> hit_expected_position =
@@ -473,6 +490,13 @@ FrostTrackCandidates CollectFrostTrackCandidates(NTBMSummary* ntbm, int itrack,
     BOOST_LOG_TRIVIAL(debug)
       << "Skip BM track " << itrack
       << " because BM bunch is out of FROST range: " << bm_bunch;
+    return candidates;
+  }
+
+  // FROST-BM matching is now controlled only by FROST is_hit.
+  // If is_hit[bunch-1] is not 1, do not create candidates even if
+  // reconstructed FROST positions are close to the BM extrapolated position.
+  if (!IsFrostHitAtBunch(is_hit, bm_bunch)) {
     return candidates;
   }
 
@@ -494,12 +518,10 @@ FrostTrackCandidates CollectFrostTrackCandidates(NTBMSummary* ntbm, int itrack,
       const double dy_tangent = bm2_y - frost_y;
 
       const double dy = frost_y - expected_y;
-      if (std::fabs(dy) < TEMPORAL_ALLOWANCE[B2View::kSideView]) {
-        candidates.frost_y_candidates.push_back(frost_y);
-        candidates.expected_y_candidates.push_back(expected_y);
-        candidates.difference_y_candidates.push_back(dy);
-        candidates.tangent_y_candidates.push_back(dy_tangent / dz_y);
-      }
+      candidates.frost_y_candidates.push_back(frost_y);
+      candidates.expected_y_candidates.push_back(expected_y);
+      candidates.difference_y_candidates.push_back(dy);
+      candidates.tangent_y_candidates.push_back(dy_tangent / dz_y);
     }
   }
 
@@ -514,12 +536,10 @@ FrostTrackCandidates CollectFrostTrackCandidates(NTBMSummary* ntbm, int itrack,
       const double dx_tangent = bm2_x - frost_x;
 
       const double dx = frost_x - expected_x;
-      if (std::fabs(dx) < TEMPORAL_ALLOWANCE[B2View::kTopView]) {
-        candidates.frost_x_candidates.push_back(frost_x);
-        candidates.expected_x_candidates.push_back(expected_x);
-        candidates.difference_x_candidates.push_back(dx);
-        candidates.tangent_x_candidates.push_back(dx_tangent / dz_x);
-      }
+      candidates.frost_x_candidates.push_back(frost_x);
+      candidates.expected_x_candidates.push_back(expected_x);
+      candidates.difference_x_candidates.push_back(dx);
+      candidates.tangent_x_candidates.push_back(dx_tangent / dz_x);
     }
   }
 
@@ -1076,9 +1096,11 @@ int main(int argc, char *argv[]) {
 
           const int bm_bunch = my_ntbm->GetBunch(ibmtrack);
           const NearestFrostPositionResult nearest_y =
-            FindNearestFrostPosition(frost_entry, bm_bunch, B2View::kSideView, row.expected_y);
+            FindNearestFrostPosition(frost_entry, bm_bunch, B2View::kSideView,
+                                     row.expected_y, is_hit);
           const NearestFrostPositionResult nearest_x =
-            FindNearestFrostPosition(frost_entry, bm_bunch, B2View::kTopView, row.expected_x);
+            FindNearestFrostPosition(frost_entry, bm_bunch, B2View::kTopView,
+                                     row.expected_x, is_hit);
 
           const double dz_y =
             BABYMIND_POS_Z + BM_SECOND_LAYER_POS - NINJA_POS_Z_FROST - NINJA_FROST_POS_Z
@@ -1112,7 +1134,7 @@ int main(int argc, char *argv[]) {
           }
 
           const FrostTrackCandidates candidates =
-            CollectFrostTrackCandidates(my_ntbm, ibmtrack, frost_entry, z_shift);
+            CollectFrostTrackCandidates(my_ntbm, ibmtrack, frost_entry, z_shift, is_hit);
           const FrostMatchCount match_count =
             CountAcceptedFrostMatches(candidates);
 
