@@ -1,10 +1,17 @@
 # FixBMpln
 
-A temporary tool to fix incorrect `pln` values in ROOT files.
+Temporary tools to modify `BMBasicRecon` content in ROOT files.
 
-## Purpose
+## Apps
 
-This program reads all `.root` files in an input directory and fixes entries in `BMBasicRecon` where:
+This project currently provides two apps:
+
+- `fix_bmbasicrecon_class`
+- `remove_deadpln_topview`
+
+## 1. `fix_bmbasicrecon_class`
+
+Reads all `.root` files in an input directory and fixes entries in `BMBasicRecon` where:
 
 - `mod == 5`
 - `view == 0`
@@ -15,19 +22,33 @@ For those elements, it applies:
 pln -= 1;
 ```
 
-The output file name is:
+Output file name:
 
 - `input.root` -> `input_fixed.root`
 
-## What it copies
+## 2. `remove_deadpln_topview`
 
-For each input file, the program reads and writes:
+Reads all `.root` files in an input directory and removes entries in `BMBasicRecon` where:
+
+- `mod == 5`
+- `view == 1`
+- `pln == 9`, `10`, or `17`
+
+This is used to intentionally create dead planes in Baby MIND top-view.
+
+Output file name:
+
+- `input.root` -> `input.root`
+
+## What they copy
+
+For each input file, both apps read and write:
 
 - `BMBasicRecon`
 - `BMBeaminfo`
 - `BMBSD`
 
-Only `BMBasicRecon::pln` is fixed.
+Only `BMBasicRecon` content is modified.
 
 ## Directory layout
 
@@ -51,7 +72,8 @@ FixBMpln/
 │   ├── BMBSDLinkDef.hh
 │   └── PMReconLinkDef.hh
 └── app/
-    └── fix_bmbasicrecon_class.cpp
+    ├── fix_bmbasicrecon_class.cpp
+    └── remove_deadpln_topview.cpp
 ```
 
 ## Notes
@@ -71,6 +93,8 @@ make -j"$(nproc)"
 
 ## Run
 
+### Fix wrong `pln`
+
 ```bash
 ./fix_bmbasicrecon_class INPUT_DIR OUTPUT_DIR
 ```
@@ -83,9 +107,23 @@ Example:
   /group/nu/ninja/work/otani/FROSTReconData/BMdata/2-BMBSD_fixed
 ```
 
-## Root cause
+### Remove top-view dead planes
 
-The original problem came from the new `PickSignal` code (PickSignal.cpp) storing BM horizontal hits with:
+```bash
+./remove_deadpln_topview INPUT_DIR OUTPUT_DIR
+```
+
+Example:
+
+```bash
+./remove_deadpln_topview \
+  /group/nu/ninja/work/otani/FROSTReconData/BMdata/2-BMBSD \
+  /group/nu/ninja/work/otani/FROSTReconData/BMdata/2-BMBSD_deadpln
+```
+
+## Root cause of the original `pln` bug
+
+The original problem came from the new `PickSignal` code storing BM horizontal hits with:
 
 ```cpp
 pln.push_back(imod + 1);
@@ -97,4 +135,4 @@ instead of:
 pln.push_back(imod);
 ```
 
-This tool is only a temporary fix for already-produced ROOT files.
+`fix_bmbasicrecon_class` is only a temporary fix for already-produced ROOT files.

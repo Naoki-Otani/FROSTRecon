@@ -26,12 +26,14 @@
 //   .L alignment.C
 //   alignment("/path/to/input_dir",
 //                     "/path/to/output.pdf",
-//                     "/path/to/output.log");
+//                     "/path/to/output.log",
+//                     "/path/to/fit_result.csv");
 //
 //   std::vector<std::string> exclude = {"hoge.root", "hage.root"};
 //   alignment("/path/to/input_dir",
 //                     "/path/to/output.pdf",
 //                     "/path/to/output.log",
+//                     "/path/to/fit_result.csv",
 //                     exclude);
 //
 // FROST area definition:
@@ -46,13 +48,12 @@
 //   matched == 1
 //   && trackmatch_has_match == 1
 //   && bsd_good_spill_flag != 0
-//   && atan(sqrt(trackmatch_baby_mind_tangent_x^2
-//                + trackmatch_baby_mind_tangent_y^2)) < 10 deg
 //
 // Output pages in the PDF:
-//   1. dx distributions in 24 FROST areas
-//   2. dy distributions in 24 FROST areas
-//   3. dx and dy distributions for all FROST areas
+//   1. dx and dy distributions for all FROST areas
+//      The Gaussian fit mean/sigma on this page are saved to CSV.
+//   2. dx distributions in 24 FROST areas
+//   3. dy distributions in 24 FROST areas
 //
 // Each page is divided into 6 x 4 pads.
 // The pad layout follows the real FROST geometry:
@@ -64,6 +65,11 @@ namespace {
   constexpr int kNX = 6;
   constexpr int kNY = 4;
   constexpr int kNAreas = kNX * kNY;
+
+  constexpr int kNAngleBins = 20;
+  constexpr double kAngleMinDeg = -50.0;
+  constexpr double kAngleMaxDeg = 50.0;
+  constexpr double kAngleBinWidthDeg = 5.0;
 
   const double kXEdges[kNX + 1] = {
     -660.0, -440.0, -220.0, 0.0, 220.0, 440.0, 660.0
@@ -106,6 +112,15 @@ namespace {
     std::streambuf *sb2_;
   };
 
+  struct GaussianFitResult {
+    bool fit_ok = false;
+    double entries = 0.0;
+    double mean = 0.0;
+    double mean_error = 0.0;
+    double sigma = 0.0;
+    double sigma_error = 0.0;
+  };
+
   int FindXBin(double x) {
     for (int ix = 0; ix < kNX; ++ix) {
       if (x >= kXEdges[ix] && x < kXEdges[ix + 1]) return ix;
@@ -130,6 +145,43 @@ namespace {
     return iy * kNX + ix;
   }
 
+  int FindAngleBin(double thetaDeg) {
+    if (thetaDeg < kAngleMinDeg || thetaDeg >= kAngleMaxDeg) return -1;
+
+    const int ibin = static_cast<int>((thetaDeg - kAngleMinDeg) /
+                                      kAngleBinWidthDeg);
+    if (ibin < 0 || ibin >= kNAngleBins) return -1;
+    return ibin;
+  }
+
+  int MirrorAngleBin(int ibin) {
+    return kNAngleBins - 1 - ibin;
+  }
+
+  double SymmetricAngleWeight(
+      const Long64_t angleBinCounts[kNAngleBins][kNAngleBins],
+      int angleXBin,
+      int angleYBin) {
+    const Long64_t count = angleBinCounts[angleXBin][angleYBin];
+    if (count <= 0) return 0.0;
+
+    const int mirrorXBin = MirrorAngleBin(angleXBin);
+    const int mirrorYBin = MirrorAngleBin(angleYBin);
+
+    // Equalize each cell and its three sign-reflected partners to their
+    // average count. This keeps the effective statistics of each quartet
+    // while making the thetaX/thetaY distributions symmetric.
+    const double averageCount =
+        0.25 * static_cast<double>(
+            angleBinCounts[angleXBin][angleYBin] +
+            angleBinCounts[mirrorXBin][angleYBin] +
+            angleBinCounts[angleXBin][mirrorYBin] +
+            angleBinCounts[mirrorXBin][mirrorYBin]);
+
+    if (averageCount <= 0.0) return 0.0;
+    return averageCount / static_cast<double>(count);
+  }
+
   TString AreaTitle(int ix, int iy) {
     return Form("%.0f mm < x < %.0f mm, %.0f mm < y < %.0f mm",
                 kXEdges[ix], kXEdges[ix + 1],
@@ -143,16 +195,22 @@ namespace {
     return display_row * kNX + ix + 1;
   }
 
-  void DrawHistogramWithGaussianFit(TH1D *hist) {
+  GaussianFitResult DrawHistogramWithGaussianFit(TH1D *hist) {
+    GaussianFitResult result;
+    result.entries = hist->GetEntries();
+
     hist->SetLineWidth(2);
     hist->Draw("HIST");
 
-    // Require enough entries and a finite RMS for a meaningful Gaussian fit.
-    if (hist->GetEntries() < 5) return;
-    if (hist->GetRMS() <= 0.0) return;
+    // Require enough entries and a finite StdDev for a meaningful Gaussian fit.
+    if (hist->GetEntries() < 5) return result;
+    if (hist->GetStdDev() <= 0.0) return result;
 
-    const double x_min = hist->GetXaxis()->GetXmin();
-    const double x_max = hist->GetXaxis()->GetXmax();
+    const int maxBin = hist->GetMaximumBin();
+    const double mean = hist->GetBinCenter(maxBin);
+    const double stddev = hist->GetStdDev();
+    const double x_min = std::max(hist->GetXaxis()->GetXmin(), mean - 0.5 * stddev);
+    const double x_max = std::min(hist->GetXaxis()->GetXmax(), mean + 0.5 * stddev);
 
     auto *fit = new TF1(Form("%s_gaus_fit", hist->GetName()),
                         "gaus",
@@ -163,18 +221,69 @@ namespace {
     // R: use the TF1 range.
     // Q: quiet fit.
     // 0: do not let ROOT auto-draw the fit. We draw it explicitly below.
-    hist->Fit(fit, "RQ0");
+    const int fitStatus = hist->Fit(fit, "RQ0");
+    if (fitStatus == 0) {
+      result.fit_ok = true;
+      result.mean = fit->GetParameter(1);
+      result.mean_error = fit->GetParError(1);
+      result.sigma = fit->GetParameter(2);
+      result.sigma_error = fit->GetParError(2);
+
+      // For weighted histograms, use the effective number of entries for
+      // statistical uncertainties.
+      // const double nEffective = hist->GetEffectiveEntries();
+
+      // result.mean = mean;
+      // result.sigma = stddev;
+
+      // if (nEffective > 1.0) {
+      //   result.mean_error = stddev / std::sqrt(nEffective);
+      //   result.sigma_error = stddev / std::sqrt(2.0 * (nEffective - 1.0));
+      // }
+    }
+
     fit->Draw("SAME");
 
     gPad->Modified();
     gPad->Update();
+    return result;
+  }
+
+  void WriteAllEventFitResultsCsv(const char *fitCsvPath,
+                                  const GaussianFitResult &dxFit,
+                                  const GaussianFitResult &dyFit) {
+    std::ofstream csvFile(fitCsvPath);
+    if (!csvFile) {
+      std::cerr << "Error: cannot open fit CSV file: " << fitCsvPath << std::endl;
+      return;
+    }
+
+    csvFile << "# quantity,entries,fit_ok,mean,mean_error,sigma,sigma_error\n";
+    csvFile << std::setprecision(10);
+
+    csvFile << "dx,"
+            << dxFit.entries << ","
+            << dxFit.fit_ok << ","
+            << dxFit.mean << ","
+            << dxFit.mean_error << ","
+            << dxFit.sigma << ","
+            << dxFit.sigma_error << "\n";
+
+    csvFile << "dy,"
+            << dyFit.entries << ","
+            << dyFit.fit_ok << ","
+            << dyFit.mean << ","
+            << dyFit.mean_error << ","
+            << dyFit.sigma << ","
+            << dyFit.sigma_error << "\n";
   }
 }
 
 void alignment(
     const char *inputDir = "/group/nu/ninja/work/otani/FROSTReconData/BM_FROST/latest20260504/rootfile_after_TrackMatch/zshift/zshift_0",
-    const char *outputPdfPath = "/group/nu/ninja/work/otani/FROSTReconData//BM_FROST/analysis_plot/alignment/alignment_zshift0.pdf",
-    const char *logFilePath = "/group/nu/ninja/work/otani/FROSTReconData/BM_FROST/analysis_plot/alignment/alignment_zshift0.log",
+    const char *outputPdfPath = "/group/nu/ninja/work/otani/FROSTReconData//BM_FROST/analysis_plot/alignment/alignment_zshift_0.pdf",
+    const char *logFilePath = "/group/nu/ninja/work/otani/FROSTReconData/BM_FROST/analysis_plot/alignment/alignment_zshift_0.log",
+    const char *fitCsvPath = "/group/nu/ninja/work/otani/FROSTReconData/BM_FROST/analysis_plot/alignment/alignment_zshift_0_fit.csv",
     const std::vector<std::string> &excludedFiles = std::vector<std::string>
     {"BMPM_track_2025-11-29_13-46-59_Run0_afterTrackMatch_zshift0.root",
      "BMPM_track_2025-11-30_13-11-36_Run0_afterTrackMatch_zshift0.root"}) {
@@ -191,6 +300,7 @@ void alignment(
   std::streambuf *oldCerrBuf = std::cerr.rdbuf(&teeCerrBuf);
 
   std::cout << "Log file: " << logFilePath << std::endl;
+  std::cout << "Fit CSV file: " << fitCsvPath << std::endl;
 
   TChain chain("match_info");
 
@@ -250,6 +360,7 @@ void alignment(
   std::vector<double> *trackmatch_dy = nullptr;
   std::vector<double> *trackmatch_baby_mind_tangent_x = nullptr;
   std::vector<double> *trackmatch_baby_mind_tangent_y = nullptr;
+  std::vector<int> *trackmatch_ninja_track_type = nullptr;
 
   chain.SetBranchAddress("matched", &matched);
   chain.SetBranchAddress("bsd_good_spill_flag", &bsd_good_spill_flag);
@@ -260,15 +371,16 @@ void alignment(
   chain.SetBranchAddress("trackmatch_dy", &trackmatch_dy);
   chain.SetBranchAddress("trackmatch_baby_mind_tangent_x", &trackmatch_baby_mind_tangent_x);
   chain.SetBranchAddress("trackmatch_baby_mind_tangent_y", &trackmatch_baby_mind_tangent_y);
+  chain.SetBranchAddress("trackmatch_ninja_track_type", &trackmatch_ninja_track_type);
 
   std::vector<TH1D*> hDx(kNAreas, nullptr);
   std::vector<TH1D*> hDy(kNAreas, nullptr);
   auto *hDxAll = new TH1D("hDxAll",
                           "dx distribution for all FROST areas;dx [mm];Number of events",
-                          100, -500.0, 500.0);
+                          500, -500.0, 500.0);
   auto *hDyAll = new TH1D("hDyAll",
                           "dy distribution for all FROST areas;dy [mm];Number of events",
-                          100, -500.0, 500.0);
+                          1000, -500.0, 500.0);
   hDxAll->Sumw2();
   hDyAll->Sumw2();
 
@@ -279,21 +391,30 @@ void alignment(
 
       hDx[iarea] = new TH1D(Form("hDx_area_%d_%d", ix, iy),
                             Form("%s;dx [mm];Number of events", title.Data()),
-                            100, -500.0, 500.0);
+                            1000, -500.0, 500.0);
       hDy[iarea] = new TH1D(Form("hDy_area_%d_%d", ix, iy),
                             Form("%s;dy [mm];Number of events", title.Data()),
-                            100, -500.0, 500.0);
+                            1000, -500.0, 500.0);
 
       hDx[iarea]->Sumw2();
       hDy[iarea]->Sumw2();
     }
   }
 
+  Long64_t angleBinCounts[kNAngleBins][kNAngleBins] = {};
+  Long64_t nAngleCountedTracks = 0;
+  Long64_t nOutOfAngleRangeInCounting = 0;
+  Long64_t nOutOfAngleRangeInFilling = 0;
   Long64_t nFilledTracks = 0;
+  double nFilledWeightedTracks = 0.0;
   Long64_t nOutOfFrostArea = 0;
-  Long64_t nVectorMismatch = 0;
+  Long64_t nVectorMismatchInCounting = 0;
+  Long64_t nVectorMismatchInFilling = 0;
 
   const Long64_t nEntries = chain.GetEntries();
+
+  // First pass: count accepted tracks in each (thetaX, thetaY) bin.
+  // The same event selections must be used again in the filling pass.
   for (Long64_t iEntry = 0; iEntry < nEntries; ++iEntry) {
     chain.GetEntry(iEntry);
 
@@ -306,7 +427,8 @@ void alignment(
         !trackmatch_dx ||
         !trackmatch_dy ||
         !trackmatch_baby_mind_tangent_x ||
-        !trackmatch_baby_mind_tangent_y) {
+        !trackmatch_baby_mind_tangent_y ||
+        !trackmatch_ninja_track_type) {
       continue;
     }
 
@@ -316,8 +438,82 @@ void alignment(
         trackmatch_dx->size() != nTracks ||
         trackmatch_dy->size() != nTracks ||
         trackmatch_baby_mind_tangent_x->size() != nTracks ||
-        trackmatch_baby_mind_tangent_y->size() != nTracks) {
-      ++nVectorMismatch;
+        trackmatch_baby_mind_tangent_y->size() != nTracks ||
+        trackmatch_ninja_track_type->size() != nTracks) {
+      ++nVectorMismatchInCounting;
+      continue;
+    }
+
+    for (std::size_t iTrack = 0; iTrack < nTracks; ++iTrack) {
+      if (trackmatch_has_match->at(iTrack) != 1) continue;
+
+      const double frostX = trackmatch_frost_nearest_x->at(iTrack);
+      const double frostY = trackmatch_frost_nearest_y->at(iTrack);
+      const double tx = trackmatch_baby_mind_tangent_x->at(iTrack);
+      const double ty = trackmatch_baby_mind_tangent_y->at(iTrack);
+      const int ninjaTrackType = trackmatch_ninja_track_type->at(iTrack);
+
+      const bool passPosition =
+        (std::abs(frostX) < 360.0 && std::abs(frostY) < 500.0);
+      if (!passPosition) continue;
+
+      const bool passTrackType =
+        (ninjaTrackType == 1);
+      if (!passTrackType) continue;
+
+      const int ix = FindXBin(frostX);
+      const int iy = FindYBin(frostY);
+      if (ix < 0 || iy < 0) continue;
+
+      const double thetaX = std::atan(tx) * 180.0 / TMath::Pi();
+      const double thetaY = std::atan(ty) * 180.0 / TMath::Pi();
+      const int angleXBin = FindAngleBin(thetaX);
+      const int angleYBin = FindAngleBin(thetaY);
+      if (angleXBin < 0 || angleYBin < 0) {
+        ++nOutOfAngleRangeInCounting;
+        continue;
+      }
+
+      ++angleBinCounts[angleXBin][angleYBin];
+      ++nAngleCountedTracks;
+    }
+  }
+
+  std::cout << "Tracks counted for angle weighting: "
+            << nAngleCountedTracks << std::endl;
+  std::cout << "Tracks outside angle range in counting pass: "
+            << nOutOfAngleRangeInCounting << std::endl;
+  std::cout << "Spills skipped by vector mismatch in counting pass: "
+            << nVectorMismatchInCounting << std::endl;
+
+  // Second pass: fill histograms with weights that symmetrize the
+  // thetaX/thetaY distribution under thetaX -> -thetaX and thetaY -> -thetaY.
+  for (Long64_t iEntry = 0; iEntry < nEntries; ++iEntry) {
+    chain.GetEntry(iEntry);
+
+    if (matched != 1) continue;
+    if (bsd_good_spill_flag == 0) continue;
+
+    if (!trackmatch_has_match ||
+        !trackmatch_frost_nearest_x ||
+        !trackmatch_frost_nearest_y ||
+        !trackmatch_dx ||
+        !trackmatch_dy ||
+        !trackmatch_baby_mind_tangent_x ||
+        !trackmatch_baby_mind_tangent_y ||
+        !trackmatch_ninja_track_type) {
+      continue;
+    }
+
+    const std::size_t nTracks = trackmatch_has_match->size();
+    if (trackmatch_frost_nearest_x->size() != nTracks ||
+        trackmatch_frost_nearest_y->size() != nTracks ||
+        trackmatch_dx->size() != nTracks ||
+        trackmatch_dy->size() != nTracks ||
+        trackmatch_baby_mind_tangent_x->size() != nTracks ||
+        trackmatch_baby_mind_tangent_y->size() != nTracks ||
+        trackmatch_ninja_track_type->size() != nTracks) {
+      ++nVectorMismatchInFilling;
       std::cerr << "Warning: vector size mismatch at spill entry "
                 << iEntry << ". Skip this spill." << std::endl;
       continue;
@@ -332,10 +528,15 @@ void alignment(
       const double dy = trackmatch_dy->at(iTrack);
       const double tx = trackmatch_baby_mind_tangent_x->at(iTrack);
       const double ty = trackmatch_baby_mind_tangent_y->at(iTrack);
+      const int ninjaTrackType = trackmatch_ninja_track_type->at(iTrack);
 
-      const double angleDeg =
-        std::atan(std::sqrt(tx * tx + ty * ty)) * 180.0 / TMath::Pi();
-      if (angleDeg >= 10.0) continue;
+      const bool passPosition =
+        (std::abs(frostX) < 360.0 && std::abs(frostY) < 500.0);
+      if (!passPosition) continue;
+
+      const bool passTrackType =
+        (ninjaTrackType == 1);
+      if (!passTrackType) continue;
 
       const int ix = FindXBin(frostX);
       const int iy = FindYBin(frostY);
@@ -345,18 +546,37 @@ void alignment(
         continue;
       }
 
+      const double thetaX = std::atan(tx) * 180.0 / TMath::Pi();
+      const double thetaY = std::atan(ty) * 180.0 / TMath::Pi();
+      const int angleXBin = FindAngleBin(thetaX);
+      const int angleYBin = FindAngleBin(thetaY);
+      if (angleXBin < 0 || angleYBin < 0) {
+        ++nOutOfAngleRangeInFilling;
+        continue;
+      }
+
+      const double angleWeight =
+        SymmetricAngleWeight(angleBinCounts, angleXBin, angleYBin);
+      if (angleWeight <= 0.0) continue;
+
       const int iarea = AreaIndex(ix, iy);
-      hDx[iarea]->Fill(dx);
-      hDy[iarea]->Fill(dy);
-      hDxAll->Fill(dx);
-      hDyAll->Fill(dy);
+      hDx[iarea]->Fill(dx, angleWeight);
+      hDy[iarea]->Fill(dy, angleWeight);
+      hDxAll->Fill(dx, angleWeight);
+      hDyAll->Fill(dy, angleWeight);
       ++nFilledTracks;
+      nFilledWeightedTracks += angleWeight;
     }
   }
 
   std::cout << "Filled matched tracks: " << nFilledTracks << std::endl;
+  std::cout << "Filled matched tracks after weighting: "
+            << nFilledWeightedTracks << std::endl;
   std::cout << "Tracks outside FROST area: " << nOutOfFrostArea << std::endl;
-  std::cout << "Spills skipped by vector mismatch: " << nVectorMismatch << std::endl;
+  std::cout << "Tracks outside angle range in filling pass: "
+            << nOutOfAngleRangeInFilling << std::endl;
+  std::cout << "Spills skipped by vector mismatch in filling pass: "
+            << nVectorMismatchInFilling << std::endl;
 
   gStyle->SetOptStat(1110);
   gStyle->SetOptFit(1111);
@@ -365,7 +585,24 @@ void alignment(
 
   canvas->SaveAs((std::string(outputPdfPath) + "[").c_str());
 
-  // Page 1: dx distributions.
+  // Page 1: dx and dy distributions for all FROST areas.
+  canvas->Clear();
+  canvas->Divide(2, 1);
+
+  canvas->cd(1);
+  gPad->SetGrid();
+  const GaussianFitResult dxAllFit = DrawHistogramWithGaussianFit(hDxAll);
+
+  canvas->cd(2);
+  gPad->SetGrid();
+  const GaussianFitResult dyAllFit = DrawHistogramWithGaussianFit(hDyAll);
+
+  WriteAllEventFitResultsCsv(fitCsvPath, dxAllFit, dyAllFit);
+  std::cout << "Saved fit CSV: " << fitCsvPath << std::endl;
+
+  canvas->SaveAs(outputPdfPath);
+
+  // Page 2: dx distributions.
   canvas->Clear();
   canvas->Divide(kNX, kNY, 0.001, 0.001);
   for (int iy = 0; iy < kNY; ++iy) {
@@ -380,7 +617,7 @@ void alignment(
   }
   canvas->SaveAs(outputPdfPath);
 
-  // Page 2: dy distributions.
+  // Page 3: dy distributions.
   canvas->Clear();
   canvas->Divide(kNX, kNY, 0.001, 0.001);
   for (int iy = 0; iy < kNY; ++iy) {
@@ -393,20 +630,6 @@ void alignment(
       DrawHistogramWithGaussianFit(hDy[iarea]);
     }
   }
-  canvas->SaveAs(outputPdfPath);
-
-  // Page 3: dx and dy distributions for all FROST areas.
-  canvas->Clear();
-  canvas->Divide(2, 1);
-
-  canvas->cd(1);
-  gPad->SetGrid();
-  DrawHistogramWithGaussianFit(hDxAll);
-
-  canvas->cd(2);
-  gPad->SetGrid();
-  DrawHistogramWithGaussianFit(hDyAll);
-
   canvas->SaveAs(outputPdfPath);
 
   canvas->SaveAs((std::string(outputPdfPath) + "]").c_str());

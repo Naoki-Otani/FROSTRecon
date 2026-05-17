@@ -4,8 +4,9 @@ set -eu
 
 MACRO="DrawTrackMatchEfficiency.C"
 
-for zshift in 0 1 2 3 4 5 -1 -2 -3 -4 -5; do
-    INPUT_DIR="/group/nu/ninja/work/otani/FROSTReconData/BM_FROST/rootfile_after_TrackMatch_new/zshift/zshift_${zshift}"
+# for zshift in 0 1 2 3 4 5 -1 -2 -3 -4 -5; do
+for zshift in -4.3; do
+    INPUT_DIR="/group/nu/ninja/work/otani/FROSTReconData/BM_FROST/latest20260504/rootfile_after_TrackMatch/zshift/zshift_${zshift}"
     OUTPUT_PDF="/group/nu/ninja/work/otani/FROSTReconData/BM_FROST/analysis_plot/zshift/efficiency_zshift_${zshift}.pdf"
     OUTPUT_LOG="/group/nu/ninja/work/otani/FROSTReconData/BM_FROST/analysis_plot/zshift/efficiency_zshift_${zshift}.log"
 

@@ -84,8 +84,29 @@ target_link_libraries(fix_bmbasicrecon_class
     ROOT::RIO
 )
 
+add_executable(remove_deadpln_topview
+  ${PROJECT_SOURCE_DIR}/app/remove_deadpln_topview.cpp
+)
+
+target_include_directories(remove_deadpln_topview
+  PRIVATE
+    ${PROJECT_SOURCE_DIR}/include
+    ${PROJECT_SOURCE_DIR}/include/project
+    ${PROJECT_SOURCE_DIR}/src
+    ${CMAKE_CURRENT_BINARY_DIR}
+)
+
+target_link_libraries(remove_deadpln_topview
+  PRIVATE
+    bm_ana_data
+    ROOT::Core
+    ROOT::Hist
+    ROOT::Tree
+    ROOT::RIO
+)
+
 install(
-  TARGETS bm_ana_data fix_bmbasicrecon_class
+  TARGETS bm_ana_data fix_bmbasicrecon_class remove_deadpln_topview
   RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
   LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
   ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
