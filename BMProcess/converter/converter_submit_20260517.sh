@@ -42,16 +42,43 @@ for bm_file in "$BM_DIR"/BMBSD_*.root; do
         echo "      expected: $pm_file"
         continue
     fi
-    if [ ! -d "$wg_directory" ]; then
-        echo "Skip: corresponding WG directory not found for $bm_base"
-        echo "      expected: $wg_directory"
-        continue
+
+    # ========= WG option control =========
+    wg_args=()
+    use_wg=1
+
+    case "$bm_base" in
+        BMBSD_2025-12-03_00-00-00.root|\
+        BMBSD_2026-01-16_00-00-00.root|\
+        BMBSD_2026-01-20_00-00-00.root|\
+        BMBSD_2026-01-21_00-00-00.root)
+            use_wg=0
+            ;;
+    esac
+
+    if [ "$use_wg" -eq 1 ]; then
+        if [ ! -d "$wg_directory" ]; then
+            echo "Skip: corresponding WG directory not found for $bm_base"
+            echo "      expected: $wg_directory"
+            continue
+        fi
+
+        wg_args=(
+            --wagasci
+            --wagasci-path "$wg_directory"
+        )
     fi
 
     echo "Submitting job for:"
     echo "  BM  : $bm_file"
     echo "  PM  : $pm_file"
-    echo "  WG  : $wg_directory"
+
+    if [ "$use_wg" -eq 1 ]; then
+        echo "  WG  : $wg_directory"
+    else
+        echo "  WG  : disabled for this BM file"
+    fi
+
     echo "  OUT : $out_file"
     echo "  LOG : $log_file"
     echo "  ROOT: $root_out_file"
@@ -62,8 +89,7 @@ for bm_file in "$BM_DIR"/BMBSD_*.root; do
         --output-file-path "$root_out_file" \
         --proton-module \
         --proton-module-path "$pm_file" \
-        --wagasci \
-        --wagasci-path "$wg_directory" \
+        "${wg_args[@]}" \
         --baby-mind \
         --baby-mind-path "$bm_file" \
         --log-file-path "$log_file" \

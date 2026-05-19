@@ -5,10 +5,10 @@ set -eu
 # ========= path settings =========
 ROOT_IN_DIR="/group/nu/ninja/work/otani/FROSTReconData/BM_FROST/rootfile_after_HitConverter"
 ROOT_OUT_DIR="/group/nu/ninja/work/otani/FROSTReconData/BM_FROST/rootfile_after_TrackMatch"
-OUT_DIR="$ROOT_OUT_DIR/.out"
+OUT_DIR="$ROOT_OUT_DIR/out"
 
 SIF="/home/nu/notani/wagasci_ana_0.2.4.sif"
-TrackMatch="/home/nu/notani/FROSTRecon/FROST_BM_Match/bin/TrackMatch/TrackMatch"
+TrackMatch="/home/nu/notani/FROSTRecon/FROST_BM_Match/install/bin/TrackMatch/TrackMatch"
 
 QUEUE="s"
 

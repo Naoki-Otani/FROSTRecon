@@ -3,14 +3,14 @@
 set -eu
 
 # ========= path settings =========
-BM_DIR="/group/nu/ninja/work/otani/FROSTReconData/WGBMdata/3-BMPMWGrecon/track_merged"
+BM_DIR="/group/nu/ninja/work/otani/FROSTReconData/BMdata/4-BMPMrecon/track_merged"
 FROST_DIR="/group/nu/ninja/work/otani/FROSTReconData/FROSTdata"
 
 ROOT_OUT_DIR="/group/nu/ninja/work/otani/FROSTReconData/BM_FROST/rootfile_after_HitConverter"
 OUT_DIR="$ROOT_OUT_DIR/out"
 
 SIF="/home/nu/notani/wagasci_ana_0.2.4.sif"
-HITCONVERTER="/home/nu/notani/FROSTRecon/FROST_BM_Match/bin/HitConverter/HitConverter"
+HITCONVERTER="/home/nu/notani/FROSTRecon/FROST_BM_Match/install/bin/HitConverter/HitConverter"
 
 QUEUE="s"
 

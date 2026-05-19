@@ -837,10 +837,14 @@ double MyFuncCalculateTrackLength(const B2TrackSummary* track, double ax, double
 
 }
 
-void TransferBabyMindTrackInfo(const B2SpillSummary &spill_summary, NTBMSummary *ntbm_summary, int datatype,
-			       B2Dimension &dimension, std::string fhc_rhc) {
+void TransferBabyMindTrackInfo(const B2SpillSummary &spill_summary,
+			       NTBMSummary *ntbm_summary,
+			       int datatype,
+			       B2Dimension &dimension) {
 
   int itrack = 0;
+  const int bsd_good_spill_flag =
+    spill_summary.GetBeamSummary().GetBsdGoodSpillFlag();
 
   auto it_recon_vertex = spill_summary.BeginReconVertex();
   while ( auto *vertex = it_recon_vertex.Next() ) {
@@ -918,16 +922,22 @@ void TransferBabyMindTrackInfo(const B2SpillSummary &spill_summary, NTBMSummary 
       double nll_minus = track->GetNegativeLogLikelihoodMinus();
       ntbm_summary->SetNegativeLogLikelihoodPlus(itrack, nll_plus);
       ntbm_summary->SetNegativeLogLikelihoodMinus(itrack, nll_minus);
-      if(fhc_rhc == "FHC") {
+
+      if (bsd_good_spill_flag > 0) {
+        // FHC spill.
         if ( nll_minus - nll_plus >= 4 )
           ntbm_summary->SetCharge(itrack, 1);
         else
           ntbm_summary->SetCharge(itrack, -1);
-      }else if(fhc_rhc == "RHC") {
+      } else if (bsd_good_spill_flag < 0) {
+        // RHC spill.
         if ( nll_plus - nll_minus >= 4 ) //temporal threshold, to be optimized using MC!!!
           ntbm_summary->SetCharge(itrack, -1);
         else
           ntbm_summary->SetCharge(itrack, 1);
+      } else {
+        // Beam mode is unknown for bad/undefined spill.
+        ntbm_summary->SetCharge(itrack, B2_NON_INITIALIZED_VALUE);
       }
 
       ntbm_summary->SetBunch(itrack, track->GetBunch());
@@ -989,8 +999,8 @@ int main(int argc, char *argv[]) {
   B2Dimension dimension_((std::string)"/opt/wagasci_mc/WagasciMC/etc/wagasci/b2/geometry");
 
   logging::trivial::severity_level log_level = logging::trivial::info;
-  if (argc == 7) {
-    log_level = ParseLogLevel(argv[6]);
+  if (argc == 6) {
+    log_level = ParseLogLevel(argv[5]);
   }
 
   logging::core::get()->set_filter(
@@ -998,13 +1008,12 @@ int main(int argc, char *argv[]) {
 
   BOOST_LOG_TRIVIAL(info) << "==========FROST-Baby MIND Track Matching Start==========";
 
-  if ( argc != 6 && argc != 7 ) {
+  if ( argc != 5 && argc != 6 ) {
     std::cerr << "Usage : " << argv[0]
               << " <input B2 file path>"
               << " <output ROOT file path>"
               << " <z shift>"
               << " <MC(0)/data(1)>"
-              << " <FHC/RHC> "
               << " [trace|debug|info|warning|error|fatal]"
               << std::endl;
     std::exit(1);
@@ -1032,14 +1041,9 @@ int main(int argc, char *argv[]) {
 
     double z_shift = std::stof(argv[3]);
     int datatype = std::stoi(argv[4]);
-    std::string fhc_rhc = argv[5];
 
     if (datatype != 0 && datatype != 1) {
       throw std::invalid_argument("Invalid data type. Use 0 for MC and 1 for data.");
-    }
-
-    if (fhc_rhc != "FHC" && fhc_rhc != "RHC") {
-      throw std::invalid_argument("Invalid FHC/RHC option. Use 'FHC' or 'RHC'.");
     }
 
     int nspill = 0;
@@ -1101,7 +1105,7 @@ int main(int argc, char *argv[]) {
       // Extrapolate BabyMIND tracks to the NINJA FROST position
       // and get the positions to match each BabyMIND track
       if ( number_of_tracks > 0 ) {
-	      TransferBabyMindTrackInfo(input_spill_summary, my_ntbm, datatype, dimension_, fhc_rhc);
+	      TransferBabyMindTrackInfo(input_spill_summary, my_ntbm, datatype, dimension_);
 
         std::vector<TrackMatchRow> rows;
 
