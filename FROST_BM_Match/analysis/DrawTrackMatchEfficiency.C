@@ -78,10 +78,15 @@
 // ------------------------------------------------------------
 
 namespace {
-  constexpr int kNBins = 9;
+  // constexpr int kNBins = 9;
+  // const double kAngleBins[kNBins + 1] = {
+  //   0.0, 5.0, 10.0, 15.0, 20.0,
+  //   25.0, 30.0, 35.0, 40.0, 50.0
+  // };
+  constexpr int kNBins = 8;
   const double kAngleBins[kNBins + 1] = {
     0.0, 5.0, 10.0, 15.0, 20.0,
-    25.0, 30.0, 35.0, 40.0, 50.0
+    25.0, 30.0, 35.0, 40.0
   };
 
   bool HasRootExtension(const std::string &name) {
@@ -120,11 +125,11 @@ namespace {
 }
 
 void DrawTrackMatchEfficiency(
-    const char *inputDir = "/group/nu/ninja/work/otani/FROSTReconData/BM_FROST/rootfile_after_TrackMatch",
-    const char *outputPdfPath = "/group/nu/ninja/work/otani/FROSTReconData/BM_FROST/analysis_plot/efficiency.pdf",
-    const char *logFilePath = "/group/nu/ninja/work/otani/FROSTReconData/BM_FROST/analysis_plot/efficiency.log",
+    const char *inputDir = "/group/nu/ninja/work/otani/FROSTReconData/BM_FROST/rootfile_after_TrackMatch_withoutWG_dx-1.30_dy+25.87",
+    const char *outputPdfPath = "/group/nu/ninja/work/otani/FROSTReconData/BM_FROST/analysis_plot/efficiency_dx-1.30_dy+25.87_below40deg.pdf",
+    const char *logFilePath = "/group/nu/ninja/work/otani/FROSTReconData/BM_FROST/analysis_plot/efficiency_dx-1.30_dy+25.87_below40deg.log",
     const std::vector<std::string> &excludedFiles = std::vector<std::string>
-    {"BMPM_track_2025-11-29_13-46-59_Run0_afterTrackMatch.root", "BMPM_track_2025-11-30_13-11-36_Run0_afterTrackMatch.root"}
+    {"BMPM_track_2025-11-29_00-00-00_afterTrackMatch.root", "BMPM_track_2025-11-30_00-00-00_afterTrackMatch.root"}
     ) {
 
   std::ofstream logFile(logFilePath);
@@ -640,7 +645,8 @@ void DrawTrackMatchEfficiency(
   auto *canvas = new TCanvas("c_eff", "c_eff", 900, 700);
   canvas->SetGrid();
 
-  hEff->SetMinimum(0.0);
+  // hEff->SetMinimum(0.0);
+  hEff->SetMinimum(0.9);
   hEff->SetMaximum(1.0);
   hEff->SetLineColor(0);
   hEff->SetLineWidth(0);
@@ -660,6 +666,14 @@ void DrawTrackMatchEfficiency(
 
   // Page 1: efficiency.
   gStyle->SetOptStat(0);
+  gPad->SetLeftMargin(0.15);
+  gPad->SetBottomMargin(0.15);
+  hEff->GetXaxis()->SetTitleSize(0.05);
+  hEff->GetYaxis()->SetTitleSize(0.05);
+  hEff->GetXaxis()->SetLabelSize(0.05);
+  hEff->GetYaxis()->SetLabelSize(0.05);
+  hEff->GetXaxis()->SetTitleOffset(1.0);
+  hEff->GetYaxis()->SetTitleOffset(1.2);
   hEff->Draw();
   gEff->Draw("P SAME");
   canvas->SaveAs(outputPdfPath);
@@ -668,7 +682,8 @@ void DrawTrackMatchEfficiency(
   canvas->Clear();
   canvas->SetGrid();
   gStyle->SetOptStat(0);
-  hEffIsHit->SetMinimum(0.0);
+  // hEffIsHit->SetMinimum(0.0);
+  hEffIsHit->SetMinimum(0.9);
   hEffIsHit->SetMaximum(1.0);
   hEffIsHit->SetLineColor(0);
   hEffIsHit->SetLineWidth(0);
