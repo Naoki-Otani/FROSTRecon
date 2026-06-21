@@ -11,6 +11,11 @@ The code is refactored so that:
 2. Input `TTree` / branch-name dependencies are isolated in `FROST::TreeReader` (`src/TreeReader.cc`).
 3. Mapping graphs are written by `mapfunction_tool` and directly read by `FROST_reconstruction`.
 
+Default mapping files for `FROST_reconstruction` are provided under:
+
+- `mapfunc/mapfunc_singlehit_4.5.root`
+- `mapfunc/mapfunc_twohit_4.5.root`
+
 ---
 
 ## Build
@@ -131,6 +136,34 @@ You can override this with:
 
 Photon counts are read via `FROST::TreeReader`.
 
+### Usage
+
+```text
+Usage:
+  ./FROST_reconstruction --mc|--data --in <input.root> --out <output.root> [options]
+
+Required:
+  --mc                   Use MC input format
+  --data                 Use data input format
+                         Specify exactly one of --mc or --data.
+
+  --in <input.root>      Input ROOT file
+  --out <output.root>    Output ROOT file
+
+Options:
+  --tree <name>          Target tree name
+                         default: wls for --mc, tree for --data
+  --single-map <path>    Single-hit map ROOT file
+                         default: mapfunc/mapfunc_singlehit_4.5.root
+  --two-map <path>       Two-hit map ROOT file
+                         default: mapfunc/mapfunc_twohit_4.5.root
+  --chi2-threshold <val> Reduced chi2 threshold for multi-hit tagging
+                         default: 1.23
+  --max-events <N>       Maximum number of events to process
+                         default: 0, meaning all events
+  -h, --help             Show this help
+```
+
 #### MC input format
 
 Expected branches:
@@ -179,29 +212,41 @@ For MC, reconstruction is performed only once, and the results are stored in bun
 
 Example:
 
+Using the default map files and chi-square threshold:
+
 ```bash
 ./FROST_reconstruction \
   --mc \
   --in input.root \
-  --out out.root \
-  --single-map single_map.root \
-  --two-map two_map.root
+  --out out.root
 ```
 
 ```bash
 ./FROST_reconstruction \
   --data \
   --in input.root \
+  --out out.root
+```
+
+Use `--single-map`, `--two-map`, or `--chi2-threshold` only when overriding the defaults:
+
+```bash
+./FROST_reconstruction \
+  --mc \
+  --in input.root \
   --out out.root \
   --single-map single_map.root \
-  --two-map two_map.root
+  --two-map two_map.root \
+  --chi2-threshold 1.50
 ```
 
 Important options:
 
-- `--chi2-threshold 1.26` (default 1.26)
-- `--max-events N`
-- `--tree <tree_name>`
+- `--single-map <path>` (default: `mapfunc/mapfunc_singlehit_4.5.root`)
+- `--two-map <path>` (default: `mapfunc/mapfunc_twohit_4.5.root`)
+- `--chi2-threshold <val>` (default: `1.23`)
+- `--max-events <N>` (default: `0`, meaning all events)
+- `--tree <tree_name>` (default: `wls` for MC, `tree` for Data)
 
 ### Output
 
