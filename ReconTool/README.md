@@ -11,10 +11,15 @@ The code is refactored so that:
 2. Input `TTree` / branch-name dependencies are isolated in `FROST::TreeReader` (`src/TreeReader.cc`).
 3. Mapping graphs are written by `mapfunction_tool` and directly read by `FROST_reconstruction`.
 
-Default mapping files for `FROST_reconstruction` are provided under:
+Default mapping files for `FROST_reconstruction` are provided under the
+`mapfunc/` directory next to the `FROST_reconstruction` executable:
 
-- `mapfunc/mapfunc_singlehit_4.5.root`
-- `mapfunc/mapfunc_twohit_4.5.root`
+- `<executable_dir>/mapfunc/mapfunc_singlehit_4.5.root`
+- `<executable_dir>/mapfunc/mapfunc_twohit_4.5.root`
+
+The default map paths are resolved relative to the executable location, not
+relative to the current working directory. Therefore, the defaults also work
+when `FROST_reconstruction` is launched from `scripts/` or another directory.
 
 ---
 
@@ -154,14 +159,24 @@ Options:
   --tree <name>          Target tree name
                          default: wls for --mc, tree for --data
   --single-map <path>    Single-hit map ROOT file
-                         default: mapfunc/mapfunc_singlehit_4.5.root
+                         default: <executable_dir>/mapfunc/mapfunc_singlehit_4.5.root
   --two-map <path>       Two-hit map ROOT file
-                         default: mapfunc/mapfunc_twohit_4.5.root
+                         default: <executable_dir>/mapfunc/mapfunc_twohit_4.5.root
   --chi2-threshold <val> Reduced chi2 threshold for multi-hit tagging
                          default: 1.23
   --max-events <N>       Maximum number of events to process
                          default: 0, meaning all events
   -h, --help             Show this help
+```
+
+Here, `<executable_dir>` means the directory containing the
+`FROST_reconstruction` executable. For the standard build layout, this is the
+`ReconTool/` directory:
+
+```text
+ReconTool/FROST_reconstruction
+ReconTool/mapfunc/mapfunc_singlehit_4.5.root
+ReconTool/mapfunc/mapfunc_twohit_4.5.root
 ```
 
 #### MC input format
@@ -242,8 +257,8 @@ Use `--single-map`, `--two-map`, or `--chi2-threshold` only when overriding the 
 
 Important options:
 
-- `--single-map <path>` (default: `mapfunc/mapfunc_singlehit_4.5.root`)
-- `--two-map <path>` (default: `mapfunc/mapfunc_twohit_4.5.root`)
+- `--single-map <path>` (default: `<executable_dir>/mapfunc/mapfunc_singlehit_4.5.root`)
+- `--two-map <path>` (default: `<executable_dir>/mapfunc/mapfunc_twohit_4.5.root`)
 - `--chi2-threshold <val>` (default: `1.23`)
 - `--max-events <N>` (default: `0`, meaning all events)
 - `--tree <tree_name>` (default: `wls` for MC, `tree` for Data)
