@@ -1,3 +1,5 @@
+#include <cstdlib>
+#include <limits.h>
 #include <iostream>
 #include <cmath>
 #include <limits>
@@ -5,6 +7,7 @@
 #include <memory>
 #include <string>
 #include <stdexcept>
+#include <unistd.h>
 #include <array>
 #include <vector>
 #include <algorithm>
@@ -148,11 +151,50 @@ constexpr int kNbunch = 8;
 
 constexpr double kDefaultChi2Threshold = 1.23;
 
-constexpr const char* kDefaultSingleMapPath =
+constexpr const char* kDefaultSingleMapRelativePath =
     "mapfunc/mapfunc_singlehit_4.5.root";
 
-constexpr const char* kDefaultTwoMapPath =
+constexpr const char* kDefaultTwoMapRelativePath =
     "mapfunc/mapfunc_twohit_4.5.root";
+
+std::string DirName(const std::string& path) {
+  const std::string::size_type pos = path.find_last_of('/');
+  if (pos == std::string::npos) return ".";
+  if (pos == 0) return "/";
+  return path.substr(0, pos);
+}
+
+std::string JoinPath(const std::string& dir, const std::string& file) {
+  if (dir.empty() || dir == ".") return file;
+  if (dir.back() == '/') return dir + file;
+  return dir + "/" + file;
+}
+
+std::string ExecutableDir(const char* argv0) {
+  char resolved[PATH_MAX];
+
+#if defined(__linux__)
+  const ssize_t len = readlink("/proc/self/exe", resolved, sizeof(resolved) - 1);
+  if (len > 0) {
+    resolved[len] = '\0';
+    return DirName(resolved);
+  }
+#endif
+
+  if (argv0 != nullptr && realpath(argv0, resolved) != nullptr) {
+    return DirName(resolved);
+  }
+
+  return ".";
+}
+
+std::string DefaultSingleMapPath(const char* argv0) {
+  return JoinPath(ExecutableDir(argv0), kDefaultSingleMapRelativePath);
+}
+
+std::string DefaultTwoMapPath(const char* argv0) {
+  return JoinPath(ExecutableDir(argv0), kDefaultTwoMapRelativePath);
+}
 
 bool HasHelpOption(int argc, char** argv) {
   for (int i = 1; i < argc; ++i) {
@@ -164,6 +206,9 @@ bool HasHelpOption(int argc, char** argv) {
 }
 
 void PrintUsage(const char* program_name) {
+  const std::string default_single_map_path = DefaultSingleMapPath(program_name);
+  const std::string default_two_map_path = DefaultTwoMapPath(program_name);
+
   std::cerr
       << "Usage:\n"
       << "  " << program_name
@@ -182,10 +227,10 @@ void PrintUsage(const char* program_name) {
       << "                         default: wls for --mc, tree for --data\n"
       << "\n"
       << "  --single-map <path>    Single-hit map ROOT file\n"
-      << "                         default: " << kDefaultSingleMapPath << "\n"
+      << "                         default: " << default_single_map_path << "\n"
       << "\n"
       << "  --two-map <path>       Two-hit map ROOT file\n"
-      << "                         default: " << kDefaultTwoMapPath << "\n"
+      << "                         default: " << default_two_map_path << "\n"
       << "\n"
       << "  --chi2-threshold <val> Reduced chi2 threshold for multi-hit tagging\n"
       << "                         default: " << kDefaultChi2Threshold << "\n"
@@ -331,10 +376,15 @@ int main(int argc, char** argv) {
 
     const InputMode input_mode = ParseInputMode(argc, argv);
 
+    const std::string default_single_map_path = DefaultSingleMapPath(argv[0]);
+    const std::string default_two_map_path = DefaultTwoMapPath(argv[0]);
+
     const std::string in_path = cli.Get("in");
     const std::string out_path = cli.Get("out");
-    const std::string single_map_path = cli.Get("single-map", kDefaultSingleMapPath);
-    const std::string two_map_path = cli.Get("two-map", kDefaultTwoMapPath);
+    const std::string single_map_path =
+        cli.Get("single-map", default_single_map_path);
+    const std::string two_map_path =
+        cli.Get("two-map", default_two_map_path);
 
     const std::string tree_name = cli.Get("tree", DefaultTreeName(input_mode));
 
