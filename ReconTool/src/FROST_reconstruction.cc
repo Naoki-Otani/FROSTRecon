@@ -146,6 +146,56 @@ std::string DefaultTreeName(InputMode mode) {
 
 constexpr int kNbunch = 8;
 
+constexpr double kDefaultChi2Threshold = 1.23;
+
+constexpr const char* kDefaultSingleMapPath =
+    "mapfunc/mapfunc_singlehit_4.5.root";
+
+constexpr const char* kDefaultTwoMapPath =
+    "mapfunc/mapfunc_twohit_4.5.root";
+
+bool HasHelpOption(int argc, char** argv) {
+  for (int i = 1; i < argc; ++i) {
+    const std::string arg = argv[i];
+    if (arg == "-h" || arg == "--help") return true;
+  }
+
+  return false;
+}
+
+void PrintUsage(const char* program_name) {
+  std::cerr
+      << "Usage:\n"
+      << "  " << program_name
+      << " --mc|--data --in <input.root> --out <output.root> [options]\n"
+      << "\n"
+      << "Required:\n"
+      << "  --mc                   Use MC input format\n"
+      << "  --data                 Use data input format\n"
+      << "                         Specify exactly one of --mc or --data.\n"
+      << "\n"
+      << "  --in <input.root>      Input ROOT file\n"
+      << "  --out <output.root>    Output ROOT file\n"
+      << "\n"
+      << "Options:\n"
+      << "  --tree <name>          Target tree name\n"
+      << "                         default: wls for --mc, tree for --data\n"
+      << "\n"
+      << "  --single-map <path>    Single-hit map ROOT file\n"
+      << "                         default: " << kDefaultSingleMapPath << "\n"
+      << "\n"
+      << "  --two-map <path>       Two-hit map ROOT file\n"
+      << "                         default: " << kDefaultTwoMapPath << "\n"
+      << "\n"
+      << "  --chi2-threshold <val> Reduced chi2 threshold for multi-hit tagging\n"
+      << "                         default: " << kDefaultChi2Threshold << "\n"
+      << "\n"
+      << "  --max-events <N>       Maximum number of events to process\n"
+      << "                         default: 0, meaning all events\n"
+      << "\n"
+      << "  -h, --help             Show this help\n";
+}
+
 // Validate that the map ROOT file contains completed (1-mm grid) graphs.
 // This prevents silently using incomplete maps (label-only graphs), which breaks reconstruction.
 void ValidateSingleMapFile(const std::string& path) {
@@ -269,25 +319,29 @@ MapParams LoadParamsFromMapsOrThrow(const std::string& single_map_path,
 
 int main(int argc, char** argv) {
   try {
+    if (HasHelpOption(argc, argv)) {
+      PrintUsage(argv[0]);
+      return 0;
+    }
+
     FROST::CLI cli(argc, argv);
 
     cli.Require("in");
     cli.Require("out");
-    cli.Require("single-map");
-    cli.Require("two-map");
 
     const InputMode input_mode = ParseInputMode(argc, argv);
 
     const std::string in_path = cli.Get("in");
     const std::string out_path = cli.Get("out");
-    const std::string single_map_path = cli.Get("single-map");
-    const std::string two_map_path = cli.Get("two-map");
+    const std::string single_map_path = cli.Get("single-map", kDefaultSingleMapPath);
+    const std::string two_map_path = cli.Get("two-map", kDefaultTwoMapPath);
 
     const std::string tree_name = cli.Get("tree", DefaultTreeName(input_mode));
 
     const int max_events = cli.GetInt("max-events", 0);
 
-    const double chi2_threshold = cli.GetDouble("chi2-threshold", 1.26);
+    const double chi2_threshold =
+        cli.GetDouble("chi2-threshold", kDefaultChi2Threshold);
 
     // Validate mapping files (graph completeness checks).
     ValidateSingleMapFile(single_map_path);
@@ -513,8 +567,7 @@ int main(int argc, char** argv) {
 
   } catch (const std::exception& e) {
     std::cerr << "ERROR: " << e.what() << "\n\n";
-    std::cerr << "Usage example:\n";
-    std::cerr << "  FROST_reconstruction --mc|--data --in input.root --out out.root --single-map single_map.root --two-map two_map.root [--chi2-threshold <chi2_threshold>] [--tree wls|tree]\n";
+    PrintUsage(argv[0]);
     return 1;
   }
 }

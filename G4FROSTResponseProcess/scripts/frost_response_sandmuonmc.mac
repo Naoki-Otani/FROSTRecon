@@ -1,0 +1,4 @@
+/tracking/storeTrajectory 0
+/run/initialize
+/analysis/setFileName output.root
+/run/printProgress 1000
