@@ -1,23 +1,30 @@
-# ビルドディレクトリ（CMakeやMakefile）
+# Build directories
 build/
 build-*/
 cmake/
 install/
 
-# コンパイル済みバイナリやオブジェクトファイル
+# Compiled binaries and object files
 *.o
 *.so
 *.a
 *.out
 *.exe
 
-# ROOTファイルやバイナリデータ
+# ROOT files and binary data
 *.root
 *.dat
 
-# 一時ファイルやキャッシュ
+# Keep default FROST reconstruction map files under version control
+!ReconTool/mapfunc/
+!ReconTool/mapfunc/mapfunc_singlehit_4.5.root
+!ReconTool/mapfunc/mapfunc_twohit_4.5.root
+
+# Temporary files and caches
 *.pyc
 *.log
 *.tmp
 *.swp
-.DS_Store  # macOSの不要ファイル
+
+# macOS metadata files
+.DS_Store
