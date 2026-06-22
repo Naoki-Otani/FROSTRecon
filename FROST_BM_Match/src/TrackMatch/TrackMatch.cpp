@@ -8,6 +8,7 @@
 #include <string>
 #include <limits>
 #include <cctype>
+#include <stdexcept>
 
 // boost includes
 #include <boost/log/core.hpp>
@@ -121,14 +122,59 @@ double CorrectFrostPosition(double frost_position, int view, int datatype) {
   return frost_position * GetFrostPositionScale(view, datatype);
 }
 
-FrostMatchTrees OpenFrostMatchTrees(TFile *file) {
-  FrostMatchTrees trees;
-  trees.frost_match = dynamic_cast<TTree*>(file->Get("frost_match"));
+FrostInputTrees OpenFrostInputTrees(TFile *file, int datatype) {
+  FrostInputTrees trees;
+  trees.is_mc = (datatype == B2DataType::kMonteCarlo);
+
+  if (trees.is_mc) {
+    trees.frost_input = dynamic_cast<TTree*>(file->Get("frost"));
+    trees.frostmc = dynamic_cast<TTree*>(file->Get("frostmc"));
+    trees.nRooTracker = dynamic_cast<TTree*>(file->Get("nRooTracker"));
+
+    if (!trees.frost_input) {
+      throw std::runtime_error("MC input file must contain frost tree");
+    }
+    return trees;
+  }
+
+  trees.frost_input = dynamic_cast<TTree*>(file->Get("frost_match"));
   trees.match_info = dynamic_cast<TTree*>(file->Get("match_info"));
-  if (!trees.frost_match || !trees.match_info) {
-    throw std::runtime_error("Input file must contain frost_match and match_info trees");
+  if (!trees.frost_input || !trees.match_info) {
+    throw std::runtime_error(
+      "Data input file must contain frost_match and match_info trees. "
+      "Run HitConverter before TrackMatch for data."
+    );
   }
   return trees;
+}
+
+template <typename BranchType>
+void SetRequiredBranchAddress(TTree *tree, const char *branch_name,
+                              BranchType **branch_address) {
+  if (!tree) {
+    throw std::runtime_error("Cannot set branch address on a null TTree");
+  }
+  if (!tree->GetBranch(branch_name)) {
+    throw std::runtime_error(
+      std::string("Required branch ") + branch_name +
+      " is not found in tree " + tree->GetName());
+  }
+  tree->SetBranchAddress(branch_name, branch_address);
+}
+
+void CloneTreeIfExists(TFile *input_file, TFile *output_file, const char *tree_name) {
+  TTree *input_tree = dynamic_cast<TTree*>(input_file->Get(tree_name));
+  if (!input_tree) {
+    BOOST_LOG_TRIVIAL(warning)
+      << tree_name << " tree not found in input file. Skip cloning.";
+    return;
+  }
+
+  output_file->cd();
+  TTree *output_tree = input_tree->CloneTree(-1);
+  output_tree->SetName(tree_name);
+  output_tree->SetDirectory(output_file);
+  output_tree->Write("", TObject::kOverwrite);
 }
 
 NearestFrostPositionResult FindNearestFrostPosition(const FrostEntryData &frost,
@@ -1020,31 +1066,31 @@ int main(int argc, char *argv[]) {
   }
 
   try {
+    double z_shift = std::stof(argv[3]);
+    int datatype = std::stoi(argv[4]);
+
+    if (datatype != B2DataType::kMonteCarlo && datatype != B2DataType::kRealData) {
+      throw std::invalid_argument("Invalid data type. Use 0 for MC and 1 for data.");
+    }
+
     B2Reader reader(argv[1]);
     std::unique_ptr<TFile> input_root(new TFile(argv[1], "READ"));
     if (!input_root || input_root->IsZombie()) {
       throw std::runtime_error("Cannot open input ROOT file");
     }
-    FrostMatchTrees frost_trees = OpenFrostMatchTrees(input_root.get());
+    FrostInputTrees frost_trees = OpenFrostInputTrees(input_root.get(), datatype);
 
     std::vector<std::vector<double>> *x_rec = nullptr;
     std::vector<std::vector<double>> *y_rec = nullptr;
     std::vector<int> *is_hit = nullptr;
-    frost_trees.frost_match->SetBranchAddress("x_rec", &x_rec);
-    frost_trees.frost_match->SetBranchAddress("y_rec", &y_rec);
-    frost_trees.frost_match->SetBranchAddress("is_hit", &is_hit);
+    SetRequiredBranchAddress(frost_trees.frost_input, "x_rec", &x_rec);
+    SetRequiredBranchAddress(frost_trees.frost_input, "y_rec", &y_rec);
+    SetRequiredBranchAddress(frost_trees.frost_input, "is_hit", &is_hit);
 
     TTree *ntbm_tree = new TTree("ntbm", "NINJA BabyMIND Original Summary");
     ntbm_tree->SetDirectory(nullptr);
     NTBMSummary* my_ntbm = new NTBMSummary();
     ntbm_tree->Branch("NTBMSummary", &my_ntbm);
-
-    double z_shift = std::stof(argv[3]);
-    int datatype = std::stoi(argv[4]);
-
-    if (datatype != 0 && datatype != 1) {
-      throw std::invalid_argument("Invalid data type. Use 0 for MC and 1 for data.");
-    }
 
     int nspill = 0;
     std::vector<std::vector<TrackMatchRow>> spill_match_rows;
@@ -1066,12 +1112,16 @@ int main(int argc, char *argv[]) {
                                << input_spill_summary.GetBeamSummary().GetTimestamp();
 
       TransferBeamInfo(input_spill_summary, my_ntbm);
-      if ( datatype == B2DataType::kMonteCarlo)
-	      TransferMCInfo(input_spill_summary, my_ntbm);
+      // MC truth / normalization information is intentionally left for the
+      // final implementation phase, after the reconstructed matching path is
+      // validated for MC input.
+      // if (datatype == B2DataType::kMonteCarlo) {
+      //   TransferMCInfo(input_spill_summary, my_ntbm);
+      // }
 
       FrostEntryData frost_entry;
-      if (nspill < frost_trees.frost_match->GetEntries()) {
-        frost_trees.frost_match->GetEntry(nspill);
+      if (nspill < frost_trees.frost_input->GetEntries()) {
+        frost_trees.frost_input->GetEntry(nspill);
         frost_entry.x_rec = x_rec;
         frost_entry.y_rec = y_rec;
       }
@@ -1182,9 +1232,12 @@ int main(int argc, char *argv[]) {
           rows.push_back(row);
         } // ibmtrack
 
-        if ( datatype == B2DataType::kMonteCarlo &&
-            my_ntbm->GetNumberOfFrostMatchEntries() > 0 )
-          SetTruePositionAngle(input_spill_summary, my_ntbm);
+        // MC true position / angle information is intentionally left for the
+        // final implementation phase.
+        // if (datatype == B2DataType::kMonteCarlo &&
+        //     my_ntbm->GetNumberOfFrostMatchEntries() > 0) {
+        //   SetTruePositionAngle(input_spill_summary, my_ntbm);
+        // }
 
         spill_match_rows.push_back(rows);
       } else {
@@ -1209,11 +1262,18 @@ int main(int argc, char *argv[]) {
     ntbm_tree->SetDirectory(output_b2_file);
     ntbm_tree->Write("", TObject::kOverwrite);
 
-    TTree *frost_match_out = frost_trees.frost_match->CloneTree(-1);
+    TTree *frost_match_out = frost_trees.frost_input->CloneTree(-1);
+    // For MC, clone input frost as frost_match to keep the output schema
+    // compatible with the data path and downstream jobs.
     frost_match_out->SetName("frost_match");
     frost_match_out->SetDirectory(output_b2_file);
 
-    TTree *match_info_out = frost_trees.match_info->CloneTree(0);
+    TTree *match_info_out = nullptr;
+    if (frost_trees.match_info) {
+      match_info_out = frost_trees.match_info->CloneTree(0);
+    } else {
+      match_info_out = new TTree("match_info", "FROST-BabyMIND track match info");
+    }
     match_info_out->SetName("match_info");
     match_info_out->SetDirectory(output_b2_file);
 
@@ -1279,18 +1339,25 @@ int main(int argc, char *argv[]) {
     match_info_out->Branch("detector_flags", matchinfo_detector_flags,
                            "detector_flags[8]/I");
 
-    const Long64_t ninfo = frost_trees.match_info->GetEntries();
+    const Long64_t ninfo = frost_trees.match_info
+      ? frost_trees.match_info->GetEntries()
+      : ntbm_tree->GetEntries();
+    const std::vector<TrackMatchRow> empty_rows;
     for (Long64_t i = 0; i < ninfo; ++i) {
-      frost_trees.match_info->GetEntry(i);
-      if (i < frost_trees.frost_match->GetEntries()) {
-        frost_trees.frost_match->GetEntry(i);
+      if (frost_trees.match_info) {
+        frost_trees.match_info->GetEntry(i);
+      }
+      if (i < frost_trees.frost_input->GetEntries()) {
+        frost_trees.frost_input->GetEntry(i);
       } else {
         is_hit = nullptr;
       }
-      const std::vector<TrackMatchRow> &rows =
-        (i < static_cast<Long64_t>(spill_match_rows.size()))
-          ? spill_match_rows.at(i)
-          : std::vector<TrackMatchRow>{};
+
+      const std::vector<TrackMatchRow> *rows_ptr = &empty_rows;
+      if (i < static_cast<Long64_t>(spill_match_rows.size())) {
+        rows_ptr = &spill_match_rows.at(i);
+      }
+      const std::vector<TrackMatchRow> &rows = *rows_ptr;
 
       trackmatch_has_match.clear();
       trackmatch_bm_track_id.clear();
@@ -1389,6 +1456,12 @@ int main(int argc, char *argv[]) {
     output_b2_file->cd();
     frost_match_out->Write("", TObject::kOverwrite);
     match_info_out->Write("", TObject::kOverwrite);
+
+    if (datatype == B2DataType::kMonteCarlo) {
+      CloneTreeIfExists(input_root.get(), output_b2_file, "frostmc");
+      CloneTreeIfExists(input_root.get(), output_b2_file, "nRooTracker");
+    }
+
     output_b2_file->Close();
 
     //efficiency

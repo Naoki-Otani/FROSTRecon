@@ -26,7 +26,9 @@
 bool CompareBabyMindHitInOneTrack(const B2HitSummary* lhs, const B2HitSummary *rhs);
 
 /**
- * FROST entry information read from frost_match tree
+ * FROST entry information read from the selected FROST input tree.
+ * Data input uses frost_match from HitConverter output.
+ * MC input uses frost directly from the reconstruction file.
  */
 struct FrostEntryData {
   std::vector<std::vector<double>> *x_rec = nullptr;
@@ -34,11 +36,19 @@ struct FrostEntryData {
 };
 
 /**
- * Open copied trees from HitConverter output
+ * FROST-related trees used by TrackMatch.
+ *
+ * Data input:
+ *   frost_input = frost_match, match_info is required.
+ * MC input:
+ *   frost_input = frost, match_info is not required.
  */
-struct FrostMatchTrees {
-  TTree *frost_match = nullptr;
+struct FrostInputTrees {
+  TTree *frost_input = nullptr;
   TTree *match_info = nullptr;
+  TTree *frostmc = nullptr;
+  TTree *nRooTracker = nullptr;
+  bool is_mc = false;
 };
 
 /**
@@ -69,11 +79,12 @@ struct FrostTrackCandidates {
 
 
 /**
- * Open HitConverter output trees
+ * Open FROST input trees for data or MC.
  * @param file input ROOT file
+ * @param datatype MC or real data
  * @return tree bundle
  */
-FrostMatchTrees OpenFrostMatchTrees(TFile *file);
+FrostInputTrees OpenFrostInputTrees(TFile *file, int datatype);
 
 /**
  * Get position and error for one Baby MIND plane
@@ -130,18 +141,24 @@ bool NinjaHitExpected(NTBMSummary *ntbm, int itrack, double z_shift);
 
 /**
  * Collect accepted FROST candidates for one Baby MIND track.
- * FROST version directly uses x_rec/y_rec in frost_match tree.
+ * Data input uses x_rec/y_rec from the frost_match tree.
+ * MC input uses x_rec/y_rec from the frost tree.
  * Matching is performed only with the FROST bunch corresponding to the
  * Baby MIND bunch of the track.
  *
  * @param ntbm NTBMSummary object for this spill
  * @param itrack Baby MIND track id
- * @param frost one matched FROST entry
+ * @param frost one FROST entry read from the selected FROST input tree
  * @param z_shift Difference of z distance from nominal
+ * @param is_hit FROST hit flags for each bunch
+ * @param datatype Input data type, used to apply data/MC dependent corrections
  * @return accepted x/y candidate information for this track
  */
 FrostTrackCandidates CollectFrostTrackCandidates(NTBMSummary *ntbm, int itrack,
-                                                 const FrostEntryData &frost, double z_shift);
+                                                 const FrostEntryData &frost,
+                                                 double z_shift,
+                                                 const std::vector<int> *is_hit,
+                                                 int datatype);
 
 /**
  * Count accepted x/y candidates stored in one FrostTrackCandidates object
