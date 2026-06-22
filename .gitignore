@@ -2,6 +2,7 @@
 build/
 build-*/
 cmake/
+**/bin/
 install/
 
 # Compiled binaries and object files
