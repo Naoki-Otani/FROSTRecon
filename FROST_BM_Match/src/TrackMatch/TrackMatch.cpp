@@ -86,6 +86,7 @@ struct TrackMatchRow {
   Double_t tangent_y = B2_NON_INITIALIZED_VALUE;
   Double_t dtanx = B2_NON_INITIALIZED_VALUE;
   Double_t dtany = B2_NON_INITIALIZED_VALUE;
+  Int_t frost_is_hit = -1;
 };
 
 struct NearestFrostPositionResult {
@@ -101,6 +102,77 @@ bool IsFrostHitAtBunch(const std::vector<int> *is_hit, int bm_bunch) {
   if (frost_bunch_index < 0) return false;
   if (frost_bunch_index >= static_cast<int>(is_hit->size())) return false;
   return is_hit->at(frost_bunch_index) == 1;
+}
+
+std::size_t GetFrostContainerSize(const FrostEntryData &frost) {
+  std::size_t size = 0;
+  if (frost.x_rec) size = std::max(size, frost.x_rec->size());
+  if (frost.y_rec) size = std::max(size, frost.y_rec->size());
+  return size;
+}
+
+bool HasFrostPositionAtIndex(const FrostEntryData &frost, int index) {
+  if (index < 0) return false;
+
+  const std::size_t idx = static_cast<std::size_t>(index);
+
+  const bool has_x =
+    frost.x_rec &&
+    idx < frost.x_rec->size() &&
+    !frost.x_rec->at(idx).empty();
+
+  const bool has_y =
+    frost.y_rec &&
+    idx < frost.y_rec->size() &&
+    !frost.y_rec->at(idx).empty();
+
+  return has_x || has_y;
+}
+
+std::vector<int> GetFrostMatchIndices(const FrostEntryData &frost,
+                                      const std::vector<int> *is_hit,
+                                      int bm_bunch,
+                                      int datatype) {
+  std::vector<int> indices;
+
+  if (datatype == B2DataType::kRealData) {
+    const int frost_bunch_index = bm_bunch - 1;
+    if (frost_bunch_index < 0 || frost_bunch_index >= NUMBER_OF_BUNCHES) {
+      return indices;
+    }
+    if (!IsFrostHitAtBunch(is_hit, bm_bunch)) {
+      return indices;
+    }
+    indices.push_back(frost_bunch_index);
+    return indices;
+  }
+
+  // MC has no physical beam bunch. Do not use bm_bunch, which is usually 0.
+  // Instead, use all FROST reconstructed position containers that actually
+  // contain x_rec or y_rec candidates.
+  const std::size_t nindices = GetFrostContainerSize(frost);
+  for (std::size_t i = 0; i < nindices; ++i) {
+    if (HasFrostPositionAtIndex(frost, static_cast<int>(i))) {
+      indices.push_back(static_cast<int>(i));
+    }
+  }
+
+  return indices;
+}
+
+Int_t GetFrostHitValueForTrack(const FrostEntryData &frost,
+                               const std::vector<int> *is_hit,
+                               int bm_bunch,
+                               int datatype) {
+  if (datatype == B2DataType::kRealData) {
+    return IsFrostHitAtBunch(is_hit, bm_bunch) ? 1 : 0;
+  }
+
+  // MC has no bunch. Treat the presence of reconstructed FROST positions
+  // as the hit flag for the track-match output.
+  const std::vector<int> indices =
+    GetFrostMatchIndices(frost, is_hit, bm_bunch, datatype);
+  return indices.empty() ? 0 : 1;
 }
 
 double GetFrostPositionScale(int view, int datatype) {
@@ -185,17 +257,8 @@ NearestFrostPositionResult FindNearestFrostPosition(const FrostEntryData &frost,
                                                     int datatype) {
   NearestFrostPositionResult result;
 
-  const int frost_bunch_index = bm_bunch - 1;  // BM bunch: 1..8, FROST index: 0..7
-  if (frost_bunch_index < 0 || frost_bunch_index >= 8) {
-    return result;
-  }
-
-  // Do not make a nearest-hit match unless FROST has a hit in this bunch.
-  if (!IsFrostHitAtBunch(is_hit, bm_bunch)) {
-    return result;
-  }
-
   const std::vector<std::vector<double>> *source = nullptr;
+
   if (view == B2View::kTopView) {
     source = frost.x_rec;
   } else if (view == B2View::kSideView) {
@@ -205,25 +268,33 @@ NearestFrostPositionResult FindNearestFrostPosition(const FrostEntryData &frost,
   }
 
   if (!source) return result;
-  if (frost_bunch_index >= static_cast<int>(source->size())) return result;
 
-  const std::vector<double> &positions = source->at(frost_bunch_index);
-  if (positions.empty()) return result;
+  const std::vector<int> frost_indices =
+    GetFrostMatchIndices(frost, is_hit, bm_bunch, datatype);
+  if (frost_indices.empty()) return result;
 
   double best_abs_diff = std::numeric_limits<double>::max();
-  for (std::size_t i = 0; i < positions.size(); ++i) {
-    const double frost_position =
-      CorrectFrostPosition(positions.at(i), view, datatype);
-    const double diff = frost_position - expected_position;
-    const double abs_diff = std::fabs(diff);
-    if (!result.found || abs_diff < best_abs_diff) {
-      result.found = true;
-      result.frost_position = frost_position;
-      result.diff = diff;
-      best_abs_diff = abs_diff;
+  for (const int frost_index : frost_indices) {
+    if (frost_index < 0 ||
+        frost_index >= static_cast<int>(source->size())) {
+      continue;
+    }
+
+    const std::vector<double> &positions = source->at(frost_index);
+    for (std::size_t i = 0; i < positions.size(); ++i) {
+      const double frost_position =
+        CorrectFrostPosition(positions.at(i), view, datatype);
+      const double diff = frost_position - expected_position;
+      const double abs_diff = std::fabs(diff);
+      if (!result.found || abs_diff < best_abs_diff) {
+        result.found = true;
+        result.frost_position = frost_position;
+        result.diff = diff;
+        best_abs_diff = abs_diff;
+      }
+
     }
   }
-
   return result;
 }
 
@@ -553,20 +624,17 @@ FrostTrackCandidates CollectFrostTrackCandidates(NTBMSummary* ntbm, int itrack,
 
   const std::vector<double> hit_expected_position =
     CalculateExpectedPosition(ntbm, itrack, z_shift);
-  const int bm_bunch = ntbm->GetBunch(itrack);
-  const int frost_bunch_index = bm_bunch - 1;
 
-  if (frost_bunch_index < 0 || frost_bunch_index >= 8) {
+  const int bm_bunch = ntbm->GetBunch(itrack);
+  const std::vector<int> frost_indices =
+    GetFrostMatchIndices(frost, is_hit, bm_bunch, datatype);
+
+  if (frost_indices.empty()) {
     BOOST_LOG_TRIVIAL(debug)
       << "Skip BM track " << itrack
-      << " because BM bunch is out of FROST range: " << bm_bunch;
-    return candidates;
-  }
-
-  // FROST-BM matching is now controlled only by FROST is_hit.
-  // If is_hit[bunch-1] is not 1, do not create candidates even if
-  // reconstructed FROST positions are close to the BM extrapolated position.
-  if (!IsFrostHitAtBunch(is_hit, bm_bunch)) {
+      << " because no usable FROST candidate was found"
+      << " : bm_bunch=" << bm_bunch
+      << ", datatype=" << datatype;
     return candidates;
   }
 
@@ -577,41 +645,53 @@ FrostTrackCandidates CollectFrostTrackCandidates(NTBMSummary* ntbm, int itrack,
     BABYMIND_POS_Z + BM_SECOND_LAYER_POS - NINJA_POS_Z_FROST - NINJA_FROST_POS_Z
     - (2 * B2View::kTopView - 1) * 10. + z_shift;
 
-  if (frost.y_rec && frost_bunch_index < static_cast<int>(frost.y_rec->size())) {
-    const std::vector<double> &ybunch = frost.y_rec->at(frost_bunch_index);
-    for (std::size_t j = 0; j < ybunch.size(); ++j) {
-      const double frost_y =
-        CorrectFrostPosition(ybunch.at(j), B2View::kSideView, datatype);
-      const double expected_y = hit_expected_position.at(B2View::kSideView);
-      const std::vector<double> bm2_position_frost =
-        CalculateBabyMindSecondLayerPositionInFrostCoordinate(ntbm, itrack);
-      const double bm2_y = bm2_position_frost.at(B2View::kSideView);
-      const double dy_tangent = bm2_y - frost_y;
+  if (frost.y_rec) {
+    for (const int frost_index : frost_indices) {
+      if (frost_index < 0 ||
+          frost_index >= static_cast<int>(frost.y_rec->size())) {
+        continue;
+      }
+      const std::vector<double> &ybunch = frost.y_rec->at(frost_index);
+      for (std::size_t j = 0; j < ybunch.size(); ++j) {
+        const double frost_y =
+          CorrectFrostPosition(ybunch.at(j), B2View::kSideView, datatype);
+        const double expected_y = hit_expected_position.at(B2View::kSideView);
+        const std::vector<double> bm2_position_frost =
+          CalculateBabyMindSecondLayerPositionInFrostCoordinate(ntbm, itrack);
+        const double bm2_y = bm2_position_frost.at(B2View::kSideView);
+        const double dy_tangent = bm2_y - frost_y;
 
-      const double dy = frost_y - expected_y;
-      candidates.frost_y_candidates.push_back(frost_y);
-      candidates.expected_y_candidates.push_back(expected_y);
-      candidates.difference_y_candidates.push_back(dy);
-      candidates.tangent_y_candidates.push_back(dy_tangent / dz_y);
+        const double dy = frost_y - expected_y;
+        candidates.frost_y_candidates.push_back(frost_y);
+        candidates.expected_y_candidates.push_back(expected_y);
+        candidates.difference_y_candidates.push_back(dy);
+        candidates.tangent_y_candidates.push_back(dy_tangent / dz_y);
+      }
     }
   }
 
-  if (frost.x_rec && frost_bunch_index < static_cast<int>(frost.x_rec->size())) {
-    const std::vector<double> &xbunch = frost.x_rec->at(frost_bunch_index);
-    for (std::size_t j = 0; j < xbunch.size(); ++j) {
-      const double frost_x =
-        CorrectFrostPosition(xbunch.at(j), B2View::kTopView, datatype);
-      const double expected_x = hit_expected_position.at(B2View::kTopView);
-      const std::vector<double> bm2_position_frost =
-        CalculateBabyMindSecondLayerPositionInFrostCoordinate(ntbm, itrack);
-      const double bm2_x = bm2_position_frost.at(B2View::kTopView);
-      const double dx_tangent = bm2_x - frost_x;
+  if (frost.x_rec) {
+    for (const int frost_index : frost_indices) {
+      if (frost_index < 0 ||
+          frost_index >= static_cast<int>(frost.x_rec->size())) {
+        continue;
+      }
+      const std::vector<double> &xbunch = frost.x_rec->at(frost_index);
+      for (std::size_t j = 0; j < xbunch.size(); ++j) {
+        const double frost_x =
+          CorrectFrostPosition(xbunch.at(j), B2View::kTopView, datatype);
+        const double expected_x = hit_expected_position.at(B2View::kTopView);
+        const std::vector<double> bm2_position_frost =
+          CalculateBabyMindSecondLayerPositionInFrostCoordinate(ntbm, itrack);
+        const double bm2_x = bm2_position_frost.at(B2View::kTopView);
+        const double dx_tangent = bm2_x - frost_x;
 
-      const double dx = frost_x - expected_x;
-      candidates.frost_x_candidates.push_back(frost_x);
-      candidates.expected_x_candidates.push_back(expected_x);
-      candidates.difference_x_candidates.push_back(dx);
-      candidates.tangent_x_candidates.push_back(dx_tangent / dz_x);
+        const double dx = frost_x - expected_x;
+        candidates.frost_x_candidates.push_back(frost_x);
+        candidates.expected_x_candidates.push_back(expected_x);
+        candidates.difference_x_candidates.push_back(dx);
+        candidates.tangent_x_candidates.push_back(dx_tangent / dz_x);
+      }
     }
   }
 
@@ -1162,8 +1242,14 @@ int main(int argc, char *argv[]) {
         for ( int ibmtrack = 0; ibmtrack < my_ntbm->GetNumberOfTracks(); ibmtrack++ ) {
           TrackMatchRow row;
           row.bm_track_id = ibmtrack;
-          row.frost_match_bunch = my_ntbm->GetBunch(ibmtrack);
           row.ninja_track_type = my_ntbm->GetNinjaTrackType(ibmtrack);
+
+          const int bm_bunch = my_ntbm->GetBunch(ibmtrack);
+          row.frost_match_bunch =
+            (datatype == B2DataType::kMonteCarlo) ? 0 : bm_bunch;
+          row.frost_is_hit =
+            GetFrostHitValueForTrack(frost_entry, is_hit, bm_bunch, datatype);
+
           row.baby_mind_tangent_y = my_ntbm->GetBabyMindTangent(ibmtrack, B2View::kSideView);
           row.baby_mind_tangent_x = my_ntbm->GetBabyMindTangent(ibmtrack, B2View::kTopView);
 
@@ -1174,7 +1260,6 @@ int main(int argc, char *argv[]) {
           row.expected_y = expected_position.at(B2View::kSideView);
           row.expected_x = expected_position.at(B2View::kTopView);
 
-          const int bm_bunch = my_ntbm->GetBunch(ibmtrack);
           const NearestFrostPositionResult nearest_y =
             FindNearestFrostPosition(frost_entry, bm_bunch, B2View::kSideView,
                                      row.expected_y, is_hit, datatype);
@@ -1218,7 +1303,8 @@ int main(int argc, char *argv[]) {
           const FrostMatchCount match_count =
             CountAcceptedFrostMatches(candidates);
 
-          AppendFrostTrackCandidates(my_ntbm, ibmtrack, bm_bunch, candidates);
+          AppendFrostTrackCandidates(
+            my_ntbm, ibmtrack, row.frost_match_bunch, candidates);
 
           if (match_count.x_match_count > 0 && match_count.y_match_count > 0) {
             row.has_match = 1;
@@ -1441,13 +1527,7 @@ int main(int argc, char *argv[]) {
         trackmatch_dtanx.push_back(row.dtanx);
         trackmatch_dtany.push_back(row.dtany);
 
-        Int_t frost_is_hit_value = -1;
-        const int bunch = row.frost_match_bunch; // 1..8
-        if (is_hit && bunch >= 1 &&
-            bunch <= static_cast<int>(is_hit->size())) {
-          frost_is_hit_value = is_hit->at(bunch - 1); // vector index is 0..7
-        }
-        trackmatch_frost_is_hit.push_back(frost_is_hit_value);
+        trackmatch_frost_is_hit.push_back(row.frost_is_hit);
       }
 
       match_info_out->Fill();
