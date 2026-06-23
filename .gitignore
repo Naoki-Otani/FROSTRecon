@@ -4,6 +4,8 @@ build-*/
 cmake/
 **/bin/
 install/
+**/include/ninja/recon
+**/lib/ninja/recon
 
 # Compiled binaries and object files
 *.o
