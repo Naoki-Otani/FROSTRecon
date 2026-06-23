@@ -1,18 +1,33 @@
 # FROST-Baby MIND Matching Tools
 
-This package contains two executables used in sequence:
+This package contains two executables:
 
-1. **`HitConverter`**: aligns FROST events with Baby MIND/WAGASCI spills and adds FROST-related trees to a B2 ROOT file.
-2. **`TrackMatch`**: reconstructs Baby MIND track quantities, matches them to FROST hits, and writes analysis summary trees.
+1. **`HitConverter`**: aligns FROST events with Baby MIND/WAGASCI spills and adds FROST-related trees to a B2 ROOT file. This is used for real data.
+2. **`TrackMatch`**: reconstructs Baby MIND track quantities, matches them to FROST hits, and writes analysis summary trees. It supports both real data and MC input.
 
-Typical workflow:
+Typical real-data workflow:
 
 ```text
 B2/Baby MIND file + FROST recon ROOT directory
         -> HitConverter
-        -> ROOT file with frost_match and match_info
-        -> TrackMatch
-        -> ROOT file with ntbm and enriched match_info
+        -> ROOT file with frost_match and match_info trees
+        -> TrackMatch in data mode
+        -> ROOT file with ntbm, frost_match, and enriched match_info
+```
+
+Typical MC workflow:
+
+```text
+FROSTRecon MC ROOT file
+  containing tree, frost, frostmc, and optionally nRooTracker
+        -> TrackMatch in MC mode
+        -> ROOT file with ntbm, frost_match, match_info, frostmc, and nRooTracker
+```
+
+For MC, `HitConverter` is not used. The FROSTRecon MC file already contains the WAGASCI/BabyMIND B2 tree and the reconstructed FROST tree:
+
+```text
+tree + frost + frostmc + nRooTracker
 ```
 
 ## Directory structure
@@ -155,13 +170,22 @@ trace < debug < info < warning < error < fatal
 
 ### What it does
 
-`TrackMatch` reads the `HitConverter` output. It reconstructs Baby MIND track position/tangent information, extrapolates each Baby MIND track to the FROST plane, and stores BM-FROST matching information.
+`TrackMatch` reconstructs Baby MIND track position/tangent information, extrapolates each Baby MIND track to the FROST plane, and stores BM-FROST matching information.
+
+The input tree layout depends on the input mode:
+
+- **Data mode**: reads `frost_match` and `match_info` from the `HitConverter` output.
+- **MC mode**: reads `frost` directly from the FROSTRecon MC output. It also reads `frostmc` to fill FROST truth-particle information. `nRooTracker` is copied to the output if present.
 
 It writes:
 
 - `ntbm`: a tree with one `NTBMSummary` object per spill.
-- updated `match_info`: the original spill-level matching information plus track-wise vectors.
-- updated `frost_match`: copied from the input file.
+- updated `match_info`: spill-level metadata plus track-wise vectors.
+- updated `frost_match`: copied from the input FROST tree.
+
+For data input, `frost_match` is cloned from the input `frost_match` tree. For MC input, the input `frost` tree is cloned and written as `frost_match` so that downstream jobs can use a common output tree name.
+
+For MC input, `frostmc` and `nRooTracker` are also copied to the output if they exist in the input file.
 
 ### Usage
 
@@ -169,7 +193,7 @@ It writes:
 TrackMatch <input B2 ROOT file> <output ROOT file> <z shift> <MC(0)/data(1)> [trace|debug|info|warning|error|fatal]
 ```
 
-Example:
+Data example:
 
 ```bash
 bin/TrackMatch/TrackMatch \
@@ -179,6 +203,16 @@ bin/TrackMatch/TrackMatch \
   1 \
   info
 ```
+MC example:
+
+```bash
+bin/TrackMatch/TrackMatch \
+  frost_recon_mc.root \
+  afterTrackMatchMC.root \
+  0.0 \
+  0 \
+  info
+```
 
 Use `0` for MC and `1` for real data.
 
@@ -186,12 +220,34 @@ Use `0` for MC and `1` for real data.
 
 Current matching behavior is:
 
-- Baby MIND bunch is `1..8`; FROST arrays are indexed as `0..7`.
-- A FROST hit is accepted only when `is_hit[bunch - 1] == 1`.
 - Position allowance cuts are not used as the BM-FROST matching criterion.
 - A matched track requires both x-view and y-view FROST reconstructed candidates to exist.
 - For real data, FROST reconstructed x/y positions are scaled by constants in `NTBMConst.hh`; MC positions are not scaled.
 - Charge handling uses the sign of `BsdGoodSpillFlag`: positive means FHC and negative means RHC.
+
+Data matching:
+
+- Baby MIND bunch is `1..8`; FROST arrays are indexed as `0..7`.
+- A FROST hit is accepted only when `is_hit[bunch - 1] == 1`.
+- The matching candidates are taken from `x_rec[bunch - 1]` and `y_rec[bunch - 1]`.
+- A matched track requires both `x_rec[bunch - 1]` and `y_rec[bunch - 1]` to contain at least one candidate.
+
+MC matching:
+
+- MC has no physical bunch structure in the TrackMatch input.
+- FROSTRecon stores the meaningful MC hit information in index `0`.
+- A FROST hit is accepted only when `is_hit[0] == 1`.
+- The matching candidates are taken from `x_rec[0]` and `y_rec[0]`.
+- A matched track requires both `x_rec[0]` and `y_rec[0]` to contain at least one candidate.
+
+For both data and MC:
+
+- `trackmatch_expected_x/y` is the Baby MIND track extrapolated to the FROST plane.
+- `trackmatch_frost_nearest_x/y` is the nearest reconstructed FROST position to the Baby MIND extrapolated position.
+- `trackmatch_dx/dy` is `FROST position - expected position`.
+- `trackmatch_tangent_x/y` is the tangent from the Baby MIND second-layer position to the selected FROST position.
+- `trackmatch_dtanx/dtany` is the difference between the BM-FROST tangent and the Baby MIND fitted tangent.
+- Position allowance cuts are not used as the BM-FROST matching criterion.
 
 ### Main output content
 
@@ -208,7 +264,20 @@ NTBMSummary
 - file and beam information
 - Baby MIND track quantities: track type, momentum, position, tangent, maximum plane, track length, likelihoods, charge, bunch
 - BM-FROST candidate information: candidate counts, FROST x/y candidates, expected positions, differences, and candidate tangents
-- MC truth information when running on MC
+- MC normalization information when running on MC
+- FROST truth-particle information when running on MC
+
+The FROST truth-particle information is stored as spill-level vectors:
+
+- `true_frost_particle_id_`: PDG particle id of particles that hit FROST.
+- `true_frost_position_x_`: x position at `z = 0 mm` in FROST local coordinates.
+- `true_frost_position_y_`: y position at `z = 0 mm` in FROST local coordinates.
+- `true_frost_tangent_x_`: x-z tangent, computed as `px / pz`.
+- `true_frost_tangent_y_`: y-z tangent, computed as `py / pz`.
+
+The same vector index corresponds to the same truth particle in all five vectors. The number of FROST truth particles is independent of `number_of_frost_match_entries_`.
+
+The truth positions are calculated from `frostmc` using `particle_local_first_*_mm` and `particle_local_last_*_mm`, linearly extrapolated to `z = 0 mm`. The truth tangents are calculated from `particle_initial_px_mev_c / particle_initial_pz_mev_c` and `particle_initial_py_mev_c / particle_initial_pz_mev_c`.
 
 #### updated `match_info`
 
@@ -228,6 +297,11 @@ Important added branches:
 - `trackmatch_dtanx`, `trackmatch_dtany`
 - `trackmatch_frost_is_hit`
 - beam analysis branches: `spill_pot`, `bunch_pot`, `bsd_spill_number`, `timestamp`, `bsd_good_spill_flag`, `wagasci_good_spill_flag`, `detector_flags`
+- `trackmatch_true_frost_nearest_particle_id`
+- `trackmatch_true_frost_nearest_position_x`
+- `trackmatch_true_frost_nearest_position_y`
+- `trackmatch_true_frost_nearest_tangent_x`
+- `trackmatch_true_frost_nearest_tangent_y`
 
 Definitions used in `match_info`:
 
@@ -236,7 +310,17 @@ Definitions used in `match_info`:
 - `trackmatch_dx/dy`: `FROST position - expected position`.
 - `trackmatch_tangent_x/y`: tangent from the Baby MIND second-layer position to the FROST position.
 - `trackmatch_dtanx/dtany`: difference between BM-FROST tangent and Baby MIND fitted tangent.
-- `trackmatch_frost_is_hit`: `is_hit[bunch - 1]`, stored in the same row order as the other `trackmatch_*` vectors.
+- `trackmatch_frost_is_hit`:
+  - Data: `is_hit[bunch - 1]`
+  - MC: `is_hit[0]`
+  - stored in the same row order as the other `trackmatch_*` vectors.
+- `trackmatch_true_frost_nearest_particle_id`: PDG particle id of the nearest FROST truth particle.
+- `trackmatch_true_frost_nearest_position_x/y`: nearest truth-particle position at `z = 0 mm` in FROST local coordinates.
+- `trackmatch_true_frost_nearest_tangent_x/y`: nearest truth-particle tangent, computed as `px / pz` and `py / pz`.
+
+For the `trackmatch_true_frost_nearest_*` branches, TrackMatch selects the truth particle closest to the Baby MIND extrapolated position. If one or more FROST-hit muons are present, only muons with PDG id `+13` or `-13` are considered. If no FROST-hit muon is present, all FROST-hit truth particles are considered.
+
+For data, the `trackmatch_true_frost_nearest_*` values are filled with non-initialized defaults.
 
 ## Developer notes
 
