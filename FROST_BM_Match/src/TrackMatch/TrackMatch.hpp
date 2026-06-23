@@ -36,6 +36,22 @@ struct FrostEntryData {
 };
 
 /**
+ * Particle-wise truth information read from frostmc.
+ */
+struct FrostMcEntryData {
+  std::vector<int> *particle_pdg_id = nullptr;
+  std::vector<double> *particle_local_first_x_mm = nullptr;
+  std::vector<double> *particle_local_first_y_mm = nullptr;
+  std::vector<double> *particle_local_first_z_mm = nullptr;
+  std::vector<double> *particle_local_last_x_mm = nullptr;
+  std::vector<double> *particle_local_last_y_mm = nullptr;
+  std::vector<double> *particle_local_last_z_mm = nullptr;
+  std::vector<double> *particle_initial_px_mev_c = nullptr;
+  std::vector<double> *particle_initial_py_mev_c = nullptr;
+  std::vector<double> *particle_initial_pz_mev_c = nullptr;
+};
+
+/**
  * FROST-related trees used by TrackMatch.
  *
  * Data input:

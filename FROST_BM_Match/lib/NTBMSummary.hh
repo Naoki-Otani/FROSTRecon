@@ -4,6 +4,7 @@
 #include <TObject.h>
 #include <TVector2.h>
 
+#include <cstddef>
 #include <vector>
 
 #include "NTBMConst.hh"
@@ -215,18 +216,6 @@ public :
 
   std::vector<double> GetTangentXCandidates(int entry) const;
 
-  void SetNumberOfTrueParticles(int cluster, int number_of_true_particles);
-
-  int GetNumberOfTrueParticles(int cluster) const;
-
-  void SetTrueParticleId(int cluster, int particle, int true_particle_id);
-
-  void SetTrueParticleId(int cluster, std::vector<int> true_particle_id);
-
-  std::vector<int> GetTrueParticleId(int cluster) const;
-
-  int GetTrueParticleId(int cluster, int particle) const;
-
   void SetNormalization(double normalization);
 
   double GetNormalization() const;
@@ -235,29 +224,34 @@ public :
 
   double GetTotalCrossSection() const;
 
-  void SetTruePosition(int cluster, int particle, int view, double true_position);
+  void SetTrueFrostParticleId(std::vector<int> true_frost_particle_id);
 
-  void SetTruePosition(int cluster, int particle, std::vector<double> true_position);
+  std::vector<int> GetTrueFrostParticleId() const;
 
-  void SetTruePosition(int cluster, std::vector<std::vector<double>> true_position);
+  void SetTrueFrostPositionX(std::vector<double> true_frost_position_x);
 
-  std::vector<std::vector<double>> GetTruePosition(int cluster) const;
+  std::vector<double> GetTrueFrostPositionX() const;
 
-  std::vector<double> GetTruePosition(int cluster, int particle) const;
+  void SetTrueFrostPositionY(std::vector<double> true_frost_position_y);
 
-  double GetTruePosition(int cluster, int particle, int view) const;
+  std::vector<double> GetTrueFrostPositionY() const;
 
-  void SetTrueTangent(int clcuster, int particle, int view, double true_tangent);
+  void SetTrueFrostTangentX(std::vector<double> true_frost_tangent_x);
 
-  void SetTrueTangent(int cluster, int particle, std::vector<double> true_tangent);
+  std::vector<double> GetTrueFrostTangentX() const;
 
-  void SetTrueTangent(int cluster, std::vector<std::vector<double>> true_tangent);
+  void SetTrueFrostTangentY(std::vector<double> true_frost_tangent_y);
 
-  std::vector<std::vector<double>> GetTrueTangent(int cluster) const;
+  std::vector<double> GetTrueFrostTangentY() const;
 
-  std::vector<double> GetTrueTangent(int cluster, int particle) const;
+  void SetTrueFrostParticleInfo(
+    std::vector<int> true_frost_particle_id,
+    std::vector<double> true_frost_position_x,
+    std::vector<double> true_frost_position_y,
+    std::vector<double> true_frost_tangent_x,
+    std::vector<double> true_frost_tangent_y);
 
-  double GetTrueTangent(int cluster, int particle, int view) const;
+  std::size_t GetNumberOfTrueFrostParticles() const;
 
 private :
 
@@ -347,21 +341,22 @@ private :
   std::vector<std::vector<double>> tangent_x_candidates_;
 
   /////> True particle information for MC/////
-  ///> frost match entry -> true particle -> view(2)
   ///> Normalization factor from beam MC
   double normalization_;
   ///> Total cross section from NEUT
   double total_cross_section_;
-  ///> Number of true particles making one cluster
-  std::vector<int> number_of_true_particles_;
-  ///> PDG particle id of true particles
-  std::vector<std::vector<int>> true_particle_id_;
-  ///> True position
-  std::vector<std::vector<std::vector<double>>> true_position_;
-  ///> True tangent
-  std::vector<std::vector<std::vector<double>>> true_tangent_;
+  ///> PDG particle id of particles that hit FROST
+  std::vector<int> true_frost_particle_id_;
+  ///> x position at z = 0 mm in FROST local coordinates
+  std::vector<double> true_frost_position_x_;
+  ///> y position at z = 0 mm in FROST local coordinates
+  std::vector<double> true_frost_position_y_;
+  ///> x-z tangent of particles that hit FROST, px / pz
+  std::vector<double> true_frost_tangent_x_;
+  ///> y-z tangent of particles that hit FROST, py / pz
+  std::vector<double> true_frost_tangent_y_;
 
-  ClassDefOverride(NTBMSummary, 15) // NT BM Summary
+  ClassDefOverride(NTBMSummary, 16) // NT BM Summary
 };
 
 #endif

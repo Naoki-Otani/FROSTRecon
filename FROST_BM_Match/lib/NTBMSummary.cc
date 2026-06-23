@@ -2,6 +2,7 @@
 #include "NTBMConst.hh"
 
 #include <ostream>
+#include <stdexcept>
 
 NTBMSummary::NTBMSummary() {
   NTBMSummary::Clear("C");
@@ -50,10 +51,11 @@ void NTBMSummary::Clear(Option_t *option) {
   tangent_x_candidates_.clear();
   normalization_ = 1.;
   total_cross_section_ = 1.;
-  number_of_true_particles_.clear();
-  true_particle_id_.clear();
-  true_position_.clear();
-  true_tangent_.clear();
+  true_frost_particle_id_.clear();
+  true_frost_position_x_.clear();
+  true_frost_position_y_.clear();
+  true_frost_tangent_x_.clear();
+  true_frost_tangent_y_.clear();
   TObject::Clear(option);
 }
 
@@ -271,39 +273,18 @@ std::ostream &operator<<(std::ostream &os, const NTBMSummary &obj) {
   os << "\n"
      << "Normalization factor = " << obj.normalization_ << "\n"
      << "Total cross section = " << obj.total_cross_section_ << "\n";
+
   os << "\n"
-     << "Number of true particles = ";
-  for (int i = 0; i < obj.number_of_frost_match_entries_; i++) {
-    os << i + 1 << " : "
-       << obj.number_of_true_particles_.at(i);
-    if(i != obj.number_of_frost_match_entries_ - 1) os << ", ";
-  }
-  os << "Particld PDG code = ";
-  for (int i = 0; i < obj.number_of_frost_match_entries_;i++) {
-    os << i + 1 << " : (";
-    for (int j = 0; j < obj.number_of_true_particles_.at(i); j++) {
-      os << obj.true_particle_id_.at(i).at(j);
-      if (j != obj.number_of_true_particles_.at(i) - 1) os << ", ";
-    }
-    os << ")";
-  }
-  os << "True position = ";
-  for (int i =0; i < obj.number_of_frost_match_entries_; i++) {
-    os << i + 1 << " : ";
-      for (int j = 0; j < obj.number_of_true_particles_.at(i); j++) {
-	os << j + 1 << " : ( "
-	   << obj.true_position_.at(i).at(j).at(0) << ", "
-	   << obj.true_position_.at(i).at(j).at(1) << ")\n";
-      }
-  }
-  os << "True tangent = ";
-  for (int i =0; i < obj.number_of_frost_match_entries_; i++) {
-    os << i + 1 << " : ";
-      for (int j = 0; j < obj.number_of_true_particles_.at(i); j++) {
-	os << j + 1 << " : ( "
-	   << obj.true_tangent_.at(i).at(j).at(0) << ", "
-	   << obj.true_tangent_.at(i).at(j).at(1) << ")\n";
-      }
+     << "True FROST particles = "
+     << obj.true_frost_particle_id_.size() << "\n";
+  for (std::size_t i = 0; i < obj.true_frost_particle_id_.size(); i++) {
+    os << "  " << i + 1
+       << " : pid=" << obj.true_frost_particle_id_.at(i)
+       << ", x=" << obj.true_frost_position_x_.at(i)
+       << ", y=" << obj.true_frost_position_y_.at(i)
+       << ", tanx=" << obj.true_frost_tangent_x_.at(i)
+       << ", tany=" << obj.true_frost_tangent_y_.at(i)
+       << "\n";
   }
 
   return os;
@@ -654,10 +635,6 @@ void NTBMSummary::SetNumberOfFrostMatchEntries(int number_of_frost_match_entries
   difference_x_candidates_.resize(number_of_frost_match_entries_);
   tangent_y_candidates_.resize(number_of_frost_match_entries_);
   tangent_x_candidates_.resize(number_of_frost_match_entries_);
-  number_of_true_particles_.resize(number_of_frost_match_entries_);
-  true_particle_id_.resize(number_of_frost_match_entries_);
-  true_position_.resize(number_of_frost_match_entries_);
-  true_tangent_.resize(number_of_frost_match_entries_);
 }
 
 int NTBMSummary::GetNumberOfFrostMatchEntries() const {
@@ -784,40 +761,6 @@ std::vector<double> NTBMSummary::GetTangentXCandidates(int entry) const {
   return tangent_x_candidates_.at(entry);
 }
 
-void NTBMSummary::SetNumberOfTrueParticles(int cluster, int number_of_true_particles) {
-  number_of_true_particles_.at(cluster) = number_of_true_particles;
-  true_particle_id_.at(cluster).resize(number_of_true_particles_.at(cluster));
-  true_position_.at(cluster).resize(number_of_true_particles_.at(cluster));
-  true_tangent_.at(cluster).resize(number_of_true_particles_.at(cluster));
-  for ( int iparticle = 0; iparticle < number_of_true_particles_.at(cluster); iparticle++ ) {
-    true_position_.at(cluster).at(iparticle).resize(2);
-    true_tangent_.at(cluster).at(iparticle).resize(2);
-  }
-}
-
-int NTBMSummary::GetNumberOfTrueParticles(int cluster) const {
-  if (cluster >= number_of_frost_match_entries_)
-    throw std::out_of_range("Number of frost match entry out of range");
-  return number_of_true_particles_.at(cluster);
-}
-
-void NTBMSummary::SetTrueParticleId(int cluster, int particle, int true_particle_id) {
-  true_particle_id_.at(cluster).at(particle) = true_particle_id;
-}
-
-void NTBMSummary::SetTrueParticleId(int cluster, std::vector<int> true_particle_id) {
-  for (int particle = 0; particle < number_of_true_particles_.at(cluster); particle++)
-    SetTrueParticleId(cluster, particle, true_particle_id.at(particle));
-}
-
-std::vector<int> NTBMSummary::GetTrueParticleId(int cluster) const {
-  return true_particle_id_.at(cluster);
-}
-
-int NTBMSummary::GetTrueParticleId(int cluster, int particle) const {
-  return GetTrueParticleId(cluster).at(particle);
-}
-
 void NTBMSummary::SetNormalization(double normalization) {
   normalization_ = normalization;
 }
@@ -834,72 +777,75 @@ double NTBMSummary::GetTotalCrossSection() const {
   return total_cross_section_;
 }
 
-void NTBMSummary::SetTruePosition(int cluster, int particle, int view, double true_position) {
-  if (view >= NUMBER_OF_VIEWS)
-    throw std::out_of_range("View out of range");
-  true_position_.at(cluster).at(particle).at(view) = true_position;
+void NTBMSummary::SetTrueFrostParticleId(
+    std::vector<int> true_frost_particle_id) {
+  true_frost_particle_id_ = true_frost_particle_id;
 }
 
-void NTBMSummary::SetTruePosition(int cluster, int particle, std::vector<double> true_position) {
-  for(std::size_t view = 0; view < NUMBER_OF_VIEWS; view++)
-    SetTruePosition(cluster, particle, view, true_position.at(view));
+std::vector<int> NTBMSummary::GetTrueFrostParticleId() const {
+  return true_frost_particle_id_;
 }
 
-void NTBMSummary::SetTruePosition(int cluster, std::vector<std::vector<double>> true_position) {
-  for(int particle = 0; particle < number_of_true_particles_.at(cluster); particle++)
-    SetTruePosition(cluster, particle, true_position.at(particle));
+void NTBMSummary::SetTrueFrostPositionX(
+    std::vector<double> true_frost_position_x) {
+  true_frost_position_x_ = true_frost_position_x;
 }
 
-std::vector<std::vector<double>> NTBMSummary::GetTruePosition(int cluster) const {
-  if (cluster >= number_of_frost_match_entries_)
-    throw std::out_of_range("Number of frost match entry out of range");
-  return true_position_.at(cluster);
+std::vector<double> NTBMSummary::GetTrueFrostPositionX() const {
+  return true_frost_position_x_;
 }
 
-std::vector<double> NTBMSummary::GetTruePosition(int cluster, int particle) const {
-  if (particle >= number_of_true_particles_.at(cluster))
-    throw std::out_of_range("Number of true particles our of range");
-  return GetTruePosition(cluster).at(particle);
+void NTBMSummary::SetTrueFrostPositionY(
+    std::vector<double> true_frost_position_y) {
+  true_frost_position_y_ = true_frost_position_y;
 }
 
-double NTBMSummary::GetTruePosition(int cluster, int particle, int view) const {
-  if (view >= NUMBER_OF_VIEWS)
-    throw std::out_of_range("View out of range");
-  return GetTruePosition(cluster, particle).at(view);
+std::vector<double> NTBMSummary::GetTrueFrostPositionY() const {
+  return true_frost_position_y_;
 }
 
-void NTBMSummary::SetTrueTangent(int cluster, int particle, int view, double true_tangent) {
-  if (view >= NUMBER_OF_VIEWS)
-    throw std::out_of_range("View ourt of range");
-  true_tangent_.at(cluster).at(particle).at(view) = true_tangent;
+void NTBMSummary::SetTrueFrostTangentX(
+    std::vector<double> true_frost_tangent_x) {
+  true_frost_tangent_x_ = true_frost_tangent_x;
 }
 
-void NTBMSummary::SetTrueTangent(int cluster, int particle, std::vector<double> true_tangent) {
-  for (std::size_t view = 0; view < NUMBER_OF_VIEWS; view++)
-    SetTrueTangent(cluster, particle, view, true_tangent.at(view));
+std::vector<double> NTBMSummary::GetTrueFrostTangentX() const {
+  return true_frost_tangent_x_;
 }
 
-void NTBMSummary::SetTrueTangent(int cluster, std::vector<std::vector<double>> true_tangent) {
-  for (int particle = 0; particle < number_of_true_particles_.at(cluster); particle++)
-    SetTrueTangent(cluster, particle, true_tangent.at(particle));
+void NTBMSummary::SetTrueFrostTangentY(
+    std::vector<double> true_frost_tangent_y) {
+  true_frost_tangent_y_ = true_frost_tangent_y;
 }
 
-std::vector<std::vector<double>> NTBMSummary::GetTrueTangent(int cluster) const {
-  if (cluster >= number_of_frost_match_entries_)
-    throw std::out_of_range("Number of frost match entry out of range");
-  return true_tangent_.at(cluster);
+std::vector<double> NTBMSummary::GetTrueFrostTangentY() const {
+  return true_frost_tangent_y_;
 }
 
-std::vector<double> NTBMSummary::GetTrueTangent(int cluster, int particle) const {
-  if (particle >= number_of_true_particles_.at(cluster))
-    throw std::out_of_range("Number of true particles out of range");
-  return GetTrueTangent(cluster).at(particle);
+void NTBMSummary::SetTrueFrostParticleInfo(
+    std::vector<int> true_frost_particle_id,
+    std::vector<double> true_frost_position_x,
+    std::vector<double> true_frost_position_y,
+    std::vector<double> true_frost_tangent_x,
+    std::vector<double> true_frost_tangent_y) {
+  const std::size_t n = true_frost_particle_id.size();
+  if (true_frost_position_x.size() != n ||
+      true_frost_position_y.size() != n ||
+      true_frost_tangent_x.size() != n ||
+      true_frost_tangent_y.size() != n) {
+    throw std::invalid_argument(
+      "True FROST particle vectors must have the same size");
+  }
+
+  SetTrueFrostParticleId(true_frost_particle_id);
+  SetTrueFrostPositionX(true_frost_position_x);
+  SetTrueFrostPositionY(true_frost_position_y);
+  SetTrueFrostTangentX(true_frost_tangent_x);
+  SetTrueFrostTangentY(true_frost_tangent_y);
 }
 
-double NTBMSummary::GetTrueTangent(int cluster, int particle, int view) const {
-  if (view >= NUMBER_OF_VIEWS)
-    throw std::out_of_range("View out of range");
-  return GetTrueTangent(cluster, particle).at(view);
+std::size_t NTBMSummary::GetNumberOfTrueFrostParticles() const {
+  return true_frost_particle_id_.size();
 }
 
 ClassImp(NTBMSummary)

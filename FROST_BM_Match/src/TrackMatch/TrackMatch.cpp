@@ -234,6 +234,112 @@ void SetRequiredBranchAddress(TTree *tree, const char *branch_name,
   tree->SetBranchAddress(branch_name, branch_address);
 }
 
+bool FrostMcEntryHasAllBranches(const FrostMcEntryData &frostmc) {
+  return frostmc.particle_pdg_id &&
+         frostmc.particle_local_first_x_mm &&
+         frostmc.particle_local_first_y_mm &&
+         frostmc.particle_local_first_z_mm &&
+         frostmc.particle_local_last_x_mm &&
+         frostmc.particle_local_last_y_mm &&
+         frostmc.particle_local_last_z_mm &&
+         frostmc.particle_initial_px_mev_c &&
+         frostmc.particle_initial_py_mev_c &&
+         frostmc.particle_initial_pz_mev_c;
+}
+
+std::size_t GetFrostMcParticleCount(const FrostMcEntryData &frostmc) {
+  if (!FrostMcEntryHasAllBranches(frostmc)) {
+    return 0;
+  }
+
+  std::size_t n = frostmc.particle_pdg_id->size();
+  n = std::min(n, frostmc.particle_local_first_x_mm->size());
+  n = std::min(n, frostmc.particle_local_first_y_mm->size());
+  n = std::min(n, frostmc.particle_local_first_z_mm->size());
+  n = std::min(n, frostmc.particle_local_last_x_mm->size());
+  n = std::min(n, frostmc.particle_local_last_y_mm->size());
+  n = std::min(n, frostmc.particle_local_last_z_mm->size());
+  n = std::min(n, frostmc.particle_initial_px_mev_c->size());
+  n = std::min(n, frostmc.particle_initial_py_mev_c->size());
+  n = std::min(n, frostmc.particle_initial_pz_mev_c->size());
+  return n;
+}
+
+bool ExtrapolateFrostMcParticleToZ0(const FrostMcEntryData &frostmc,
+                                    std::size_t iparticle,
+                                    double &x_at_z0,
+                                    double &y_at_z0) {
+  const double x_first = frostmc.particle_local_first_x_mm->at(iparticle);
+  const double y_first = frostmc.particle_local_first_y_mm->at(iparticle);
+  const double z_first = frostmc.particle_local_first_z_mm->at(iparticle);
+  const double x_last = frostmc.particle_local_last_x_mm->at(iparticle);
+  const double y_last = frostmc.particle_local_last_y_mm->at(iparticle);
+  const double z_last = frostmc.particle_local_last_z_mm->at(iparticle);
+
+  const double dz = z_last - z_first;
+  constexpr double kEpsilon = 1.e-9;
+
+  if (std::fabs(dz) < kEpsilon) {
+    if (std::fabs(z_first) < kEpsilon) {
+      x_at_z0 = x_first;
+      y_at_z0 = y_first;
+      return true;
+    }
+    return false;
+  }
+
+  const double scale_to_z0 = -z_first / dz;
+  x_at_z0 = x_first + scale_to_z0 * (x_last - x_first);
+  y_at_z0 = y_first + scale_to_z0 * (y_last - y_first);
+  return true;
+}
+
+void FillTrueFrostParticleInfo(const FrostMcEntryData &frostmc,
+                               NTBMSummary *ntbm_summary) {
+  std::vector<int> true_frost_particle_id;
+  std::vector<double> true_frost_position_x;
+  std::vector<double> true_frost_position_y;
+  std::vector<double> true_frost_tangent_x;
+  std::vector<double> true_frost_tangent_y;
+
+  const std::size_t nparticles = GetFrostMcParticleCount(frostmc);
+  true_frost_particle_id.reserve(nparticles);
+  true_frost_position_x.reserve(nparticles);
+  true_frost_position_y.reserve(nparticles);
+  true_frost_tangent_x.reserve(nparticles);
+  true_frost_tangent_y.reserve(nparticles);
+
+  constexpr double kEpsilon = 1.e-9;
+  for (std::size_t iparticle = 0; iparticle < nparticles; ++iparticle) {
+    const double pz = frostmc.particle_initial_pz_mev_c->at(iparticle);
+    if (std::fabs(pz) < kEpsilon) {
+      continue;
+    }
+
+    double x_at_z0 = B2_NON_INITIALIZED_VALUE;
+    double y_at_z0 = B2_NON_INITIALIZED_VALUE;
+    if (!ExtrapolateFrostMcParticleToZ0(
+          frostmc, iparticle, x_at_z0, y_at_z0)) {
+      continue;
+    }
+
+    true_frost_particle_id.push_back(frostmc.particle_pdg_id->at(iparticle));
+    true_frost_position_x.push_back(x_at_z0);
+    true_frost_position_y.push_back(y_at_z0);
+    true_frost_tangent_x.push_back(
+      frostmc.particle_initial_px_mev_c->at(iparticle) / pz);
+    true_frost_tangent_y.push_back(
+      frostmc.particle_initial_py_mev_c->at(iparticle) / pz);
+  }
+
+  ntbm_summary->SetTrueFrostParticleInfo(
+    true_frost_particle_id,
+    true_frost_position_x,
+    true_frost_position_y,
+    true_frost_tangent_x,
+    true_frost_tangent_y);
+}
+
 void CloneTreeIfExists(TFile *input_file, TFile *output_file, const char *tree_name) {
   TTree *input_tree = dynamic_cast<TTree*>(input_file->Get(tree_name));
   if (!input_tree) {
@@ -730,62 +836,6 @@ void AppendFrostTrackCandidates(NTBMSummary *ntbm, int bm_track_id, int bunch,
   ntbm->SetTangentXCandidates(nentry, candidates.tangent_x_candidates);
 }
 
-void SetTruePositionAngle(const B2SpillSummary& spill_summary, NTBMSummary* ntbm_summary) {
-
-  auto it_event = spill_summary.BeginTrueEvent();
-  const auto *event = it_event.Next();
-  auto &primary_vertex_summary = event->GetPrimaryVertex();
-
-  auto it_emulsion = spill_summary.BeginEmulsion();
-  TVector3 true_position;
-  TVector3 true_direction;
-  bool found_true_muon_in_tss = false;
-  while (const auto *emulsion = it_emulsion.Next()) {
-    if ( emulsion->GetParentTrackId() == 0 ) continue;
-    if ( emulsion->GetParentTrackId() >= primary_vertex_summary.GetNumOutgoingTracks() )
-      continue;
-    // Get position of TSS downstream film position
-    if (emulsion->GetFilmType() == B2EmulsionType::kShifter && emulsion->GetPlate() == 17) {
-      int particle_id = emulsion->GetParentTrack().GetParticlePdg();
-      if (!B2Pdg::IsMuonPlusOrMinus(particle_id)) continue;
-      true_position = emulsion->GetAbsolutePosition().GetValue();
-      true_direction = emulsion->GetTangent().GetValue();
-      // Convert true position to FROST local coordinate consistently with
-      // CalculateExpectedPosition() / FROST matching.
-      true_position.SetX(true_position.X() + true_direction.X() * (NINJA_TSS_ATTACH_AC_THICK + 30.4)
-			 - NINJA_POS_X - NINJA_FROST_POS_X);
-      true_position.SetY(true_position.Y() + true_direction.Y() * (NINJA_TSS_ATTACH_AC_THICK + 10.4)
-			 - NINJA_POS_Y - NINJA_FROST_POS_Y);
-      true_position.SetZ(true_position.Z() - NINJA_POS_Z_FROST - NINJA_FROST_POS_Z);
-      found_true_muon_in_tss = true;
-      break;
-    }
-  }
-
-  if ( !found_true_muon_in_tss ) return;
-
-  std::vector<double> true_ninja_position;
-  true_ninja_position.resize(2);
-  true_ninja_position.at(B2View::kSideView) = true_position.Y();
-  true_ninja_position.at(B2View::kTopView) = true_position.X();
-  std::vector<double> true_ninja_tangent;
-  true_ninja_tangent.resize(2);
-  true_ninja_tangent.at(B2View::kSideView) = true_direction.Y();
-  true_ninja_tangent.at(B2View::kTopView) = true_direction.X();
-
-  for ( int icluster = 0; icluster < ntbm_summary->GetNumberOfFrostMatchEntries(); icluster++ ) {
-    if ( ntbm_summary->GetBabyMindTrackId(icluster) >= 0 ) {
-      ntbm_summary->SetNumberOfTrueParticles(icluster, 1);
-      ntbm_summary->SetTrueParticleId(icluster, 0, (int)PDG_t::kMuonMinus);
-      ntbm_summary->SetTruePosition(icluster, 0, true_ninja_position);
-      ntbm_summary->SetTrueTangent(icluster, 0, true_ninja_tangent);
-    } else {
-      ntbm_summary->SetNumberOfTrueParticles(icluster, 0);
-    }
-  }
-
-}
-
 // Transfer B2Summary information
 
 void TransferBeamInfo(const B2SpillSummary &spill_summary, NTBMSummary *ntbm_summary) {
@@ -1177,6 +1227,45 @@ int main(int argc, char *argv[]) {
     SetRequiredBranchAddress(frost_trees.frost_input, "y_rec", &y_rec);
     SetRequiredBranchAddress(frost_trees.frost_input, "is_hit", &is_hit);
 
+    FrostMcEntryData frostmc_entry;
+    if (datatype == B2DataType::kMonteCarlo) {
+      if (!frost_trees.frostmc) {
+        throw std::runtime_error(
+          "MC input file must contain frostmc tree to fill true FROST particles");
+      }
+
+      SetRequiredBranchAddress(
+        frost_trees.frostmc, "particle_pdg_id",
+        &frostmc_entry.particle_pdg_id);
+      SetRequiredBranchAddress(
+        frost_trees.frostmc, "particle_local_first_x_mm",
+        &frostmc_entry.particle_local_first_x_mm);
+      SetRequiredBranchAddress(
+        frost_trees.frostmc, "particle_local_first_y_mm",
+        &frostmc_entry.particle_local_first_y_mm);
+      SetRequiredBranchAddress(
+        frost_trees.frostmc, "particle_local_first_z_mm",
+        &frostmc_entry.particle_local_first_z_mm);
+      SetRequiredBranchAddress(
+        frost_trees.frostmc, "particle_local_last_x_mm",
+        &frostmc_entry.particle_local_last_x_mm);
+      SetRequiredBranchAddress(
+        frost_trees.frostmc, "particle_local_last_y_mm",
+        &frostmc_entry.particle_local_last_y_mm);
+      SetRequiredBranchAddress(
+        frost_trees.frostmc, "particle_local_last_z_mm",
+        &frostmc_entry.particle_local_last_z_mm);
+      SetRequiredBranchAddress(
+        frost_trees.frostmc, "particle_initial_px_mev_c",
+        &frostmc_entry.particle_initial_px_mev_c);
+      SetRequiredBranchAddress(
+        frost_trees.frostmc, "particle_initial_py_mev_c",
+        &frostmc_entry.particle_initial_py_mev_c);
+      SetRequiredBranchAddress(
+        frost_trees.frostmc, "particle_initial_pz_mev_c",
+        &frostmc_entry.particle_initial_pz_mev_c);
+    }
+
     TTree *ntbm_tree = new TTree("ntbm", "NINJA BabyMIND Original Summary");
     ntbm_tree->SetDirectory(nullptr);
     NTBMSummary* my_ntbm = new NTBMSummary();
@@ -1211,6 +1300,17 @@ int main(int argc, char *argv[]) {
         frost_trees.frost_input->GetEntry(nspill);
         frost_entry.x_rec = x_rec;
         frost_entry.y_rec = y_rec;
+      }
+
+      bool has_frostmc_entry = false;
+      if (datatype == B2DataType::kMonteCarlo) {
+        if (nspill < frost_trees.frostmc->GetEntries()) {
+          frost_trees.frostmc->GetEntry(nspill);
+          has_frostmc_entry = true;
+        } else {
+          BOOST_LOG_TRIVIAL(warning)
+            << "No frostmc entry for spill " << nspill;
+        }
       }
 
       // Collect all BM 3d tracks
@@ -1325,12 +1425,10 @@ int main(int argc, char *argv[]) {
           rows.push_back(row);
         } // ibmtrack
 
-        // MC true position / angle information is intentionally left for the
-        // final implementation phase.
-        // if (datatype == B2DataType::kMonteCarlo &&
-        //     my_ntbm->GetNumberOfFrostMatchEntries() > 0) {
-        //   SetTruePositionAngle(input_spill_summary, my_ntbm);
-        // }
+        if (datatype == B2DataType::kMonteCarlo &&
+            has_frostmc_entry) {
+          FillTrueFrostParticleInfo(frostmc_entry, my_ntbm);
+        }
 
         spill_match_rows.push_back(rows);
       } else {
