@@ -50,6 +50,12 @@
 
 namespace logging = boost::log;
 
+enum class BeamMode {
+  kAuto,
+  kFhc,
+  kRhc
+};
+
 namespace {
 
 logging::trivial::severity_level ParseLogLevel(std::string level) {
@@ -66,6 +72,66 @@ logging::trivial::severity_level ParseLogLevel(std::string level) {
   throw std::invalid_argument(
       "Unknown log level: " + level +
       " (use trace/debug/info/warning/error/fatal)");
+}
+
+void PrintUsage(const char *program_name) {
+  std::cerr
+    << "Usage : " << program_name
+    << " <input B2 ROOT file>"
+    << " <output ROOT file>"
+    << " <z shift>"
+    << " <MC(0)/data(1)>"
+    << " [fhc|rhc]"
+    << " [trace|debug|info|warning|error|fatal]"
+    << std::endl
+    << std::endl
+    << "Examples:" << std::endl
+    << "  Data:" << std::endl
+    << "    " << program_name
+    << " afterHitConverter.root afterTrackMatch.root 0.0 1 info"
+    << std::endl
+    << std::endl
+    << "  MC FHC:" << std::endl
+    << "    " << program_name
+    << " frost_recon_mc.root afterTrackMatchMC.root 0.0 0 fhc info"
+    << std::endl
+    << std::endl
+    << "  MC RHC:" << std::endl
+    << "    " << program_name
+    << " frost_recon_mc.root afterTrackMatchMC.root 0.0 0 rhc info"
+    << std::endl
+    << std::endl
+    << "Notes:" << std::endl
+    << "  - Use 0 for MC and 1 for real data." << std::endl
+    << "  - For MC input, fhc or rhc is required explicitly." << std::endl
+    << "  - For real data, fhc/rhc is ignored and BsdGoodSpillFlag is used."
+    << std::endl;
+}
+
+bool IsBeamModeToken(std::string mode) {
+  std::transform(mode.begin(), mode.end(), mode.begin(),
+                 [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+  return mode == "auto" || mode == "fhc" || mode == "rhc";
+}
+
+BeamMode ParseBeamMode(std::string mode) {
+  std::transform(mode.begin(), mode.end(), mode.begin(),
+                 [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+
+  if (mode == "auto") return BeamMode::kAuto;
+  if (mode == "fhc")  return BeamMode::kFhc;
+  if (mode == "rhc")  return BeamMode::kRhc;
+
+  throw std::invalid_argument(
+      "Unknown beam mode: " + mode + " (use fhc/rhc)");
+}
+
+int BeamModeToBsdGoodSpillFlag(BeamMode beam_mode) {
+  if (beam_mode == BeamMode::kFhc) return 1;
+  if (beam_mode == BeamMode::kRhc) return -1;
+
+  throw std::invalid_argument(
+      "MC beam mode must be explicitly set to fhc or rhc");
 }
 
 } // namespace
@@ -1099,11 +1165,19 @@ double MyFuncCalculateTrackLength(const B2TrackSummary* track, double ax, double
 void TransferBabyMindTrackInfo(const B2SpillSummary &spill_summary,
 			       NTBMSummary *ntbm_summary,
 			       int datatype,
-			       B2Dimension &dimension) {
+			       B2Dimension &dimension,
+			       BeamMode mc_beam_mode) {
 
   int itrack = 0;
-  const int bsd_good_spill_flag =
-    spill_summary.GetBeamSummary().GetBsdGoodSpillFlag();
+  int bsd_good_spill_flag = B2_NON_INITIALIZED_VALUE;
+  if (datatype == B2DataType::kMonteCarlo) {
+    // MC input does not carry a meaningful BSD FHC/RHC flag.
+    // Use the explicit command-line beam mode instead.
+    bsd_good_spill_flag = BeamModeToBsdGoodSpillFlag(mc_beam_mode);
+  } else {
+    bsd_good_spill_flag =
+      spill_summary.GetBeamSummary().GetBsdGoodSpillFlag();
+  }
 
   auto it_recon_vertex = spill_summary.BeginReconVertex();
   while ( auto *vertex = it_recon_vertex.Next() ) {
@@ -1227,7 +1301,6 @@ void TransferBabyMindTrackInfo(const B2SpillSummary &spill_summary,
       //std::cout << track->GetTrackLengthTotal() << ", " << track_length << std::endl;
 
       ntbm_summary->SetTrackLengthTotal(itrack, track_length);
-//一旦デバッグ用にオリジナルのB2トラック長を使用。
       // Use the original B2 track length here.
       // Some tracks contain invalid Baby MIND hit summaries that can crash
       // MyFuncCalculateTrackLength() when accessing hit->GetPlane().
@@ -1268,33 +1341,51 @@ int main(int argc, char *argv[]) {
   B2Dimension dimension_((std::string)"/opt/wagasci_mc/WagasciMC/etc/wagasci/b2/geometry");
 
   logging::trivial::severity_level log_level = logging::trivial::info;
-  if (argc == 6) {
-    log_level = ParseLogLevel(argv[5]);
-  }
-
-  logging::core::get()->set_filter(
-      logging::trivial::severity >= log_level);
 
   BOOST_LOG_TRIVIAL(info) << "==========FROST-Baby MIND Track Matching Start==========";
 
-  if ( argc != 5 && argc != 6 ) {
-    std::cerr << "Usage : " << argv[0]
-              << " <input B2 file path>"
-              << " <output ROOT file path>"
-              << " <z shift>"
-              << " <MC(0)/data(1)>"
-              << " [trace|debug|info|warning|error|fatal]"
-              << std::endl;
+  if (argc < 5 || argc > 7) {
+    PrintUsage(argv[0]);
     std::exit(1);
   }
 
   try {
     double z_shift = std::stof(argv[3]);
     int datatype = std::stoi(argv[4]);
+    BeamMode mc_beam_mode = BeamMode::kAuto;
 
     if (datatype != B2DataType::kMonteCarlo && datatype != B2DataType::kRealData) {
       throw std::invalid_argument("Invalid data type. Use 0 for MC and 1 for data.");
     }
+
+    for (int iarg = 5; iarg < argc; ++iarg) {
+      const std::string token = argv[iarg];
+      if (IsBeamModeToken(token)) {
+        if (mc_beam_mode != BeamMode::kAuto) {
+          throw std::invalid_argument("Beam mode was specified more than once");
+        }
+        mc_beam_mode = ParseBeamMode(token);
+      } else {
+        log_level = ParseLogLevel(token);
+      }
+    }
+
+    if (datatype == B2DataType::kMonteCarlo &&
+        mc_beam_mode == BeamMode::kAuto) {
+      PrintUsage(argv[0]);
+      throw std::invalid_argument(
+        "MC input requires an explicit beam mode argument: fhc or rhc");
+    }
+
+    if (datatype == B2DataType::kRealData &&
+        mc_beam_mode != BeamMode::kAuto) {
+      BOOST_LOG_TRIVIAL(warning)
+        << "Beam mode argument is ignored for real data. "
+        << "BsdGoodSpillFlag from B2BeamSummary is used instead.";
+    }
+
+    logging::core::get()->set_filter(
+        logging::trivial::severity >= log_level);
 
     B2Reader reader(argv[1]);
     std::unique_ptr<TFile> input_root(new TFile(argv[1], "READ"));
@@ -1357,7 +1448,7 @@ int main(int argc, char *argv[]) {
     int nspill = 0;
     std::vector<std::vector<TrackMatchRow>> spill_match_rows;
 
-    //20241022 count matched tracks
+    //count matched tracks
     int total_tracks = 0;
     int matched_tracks = 0;
 
@@ -1432,7 +1523,8 @@ int main(int argc, char *argv[]) {
       // Extrapolate BabyMIND tracks to the NINJA FROST position
       // and get the positions to match each BabyMIND track
       if ( number_of_tracks > 0 ) {
-	      TransferBabyMindTrackInfo(input_spill_summary, my_ntbm, datatype, dimension_);
+	      TransferBabyMindTrackInfo(
+          input_spill_summary, my_ntbm, datatype, dimension_, mc_beam_mode);
 
         std::vector<TrackMatchRow> rows;
 

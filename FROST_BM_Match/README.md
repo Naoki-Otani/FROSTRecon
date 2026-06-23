@@ -190,7 +190,7 @@ For MC input, `frostmc` and `nRooTracker` are also copied to the output if they 
 ### Usage
 
 ```bash
-TrackMatch <input B2 ROOT file> <output ROOT file> <z shift> <MC(0)/data(1)> [trace|debug|info|warning|error|fatal]
+TrackMatch <input B2 ROOT file> <output ROOT file> <z shift> <MC(0)/data(1)> [fhc|rhc] [trace|debug|info|warning|error|fatal]
 ```
 
 Data example:
@@ -211,10 +211,15 @@ bin/TrackMatch/TrackMatch \
   afterTrackMatchMC.root \
   0.0 \
   0 \
+  fhc \
   info
 ```
 
 Use `0` for MC and `1` for real data.
+
+For MC input, the beam mode must be specified explicitly with `fhc` or `rhc`. The MC input currently does not provide a meaningful `BsdGoodSpillFlag`, so TrackMatch does not infer the beam mode from that flag in MC mode.
+
+For real data, the optional `fhc`/`rhc` argument is ignored. The beam mode is determined from `BsdGoodSpillFlag` in the B2 beam summary.
 
 ### Matching rules
 
@@ -223,7 +228,7 @@ Current matching behavior is:
 - Position allowance cuts are not used as the BM-FROST matching criterion.
 - A matched track requires both x-view and y-view FROST reconstructed candidates to exist.
 - For real data, FROST reconstructed x/y positions are scaled by constants in `NTBMConst.hh`; MC positions are not scaled.
-- Charge handling uses the sign of `BsdGoodSpillFlag`: positive means FHC and negative means RHC.
+- Charge handling uses the beam mode. For real data, the beam mode is read from `BsdGoodSpillFlag`. For MC, the beam mode is taken from the explicit `fhc` or `rhc` command-line argument.
 
 Data matching:
 
@@ -239,6 +244,7 @@ MC matching:
 - A FROST hit is accepted only when `is_hit[0] == 1`.
 - The matching candidates are taken from `x_rec[0]` and `y_rec[0]`.
 - A matched track requires both `x_rec[0]` and `y_rec[0]` to contain at least one candidate.
+- The MC charge assignment uses the explicitly specified beam mode, `fhc` or `rhc`, rather than `BsdGoodSpillFlag`.
 
 For both data and MC:
 
@@ -248,6 +254,12 @@ For both data and MC:
 - `trackmatch_tangent_x/y` is the tangent from the Baby MIND second-layer position to the selected FROST position.
 - `trackmatch_dtanx/dtany` is the difference between the BM-FROST tangent and the Baby MIND fitted tangent.
 - Position allowance cuts are not used as the BM-FROST matching criterion.
+
+Beam-mode handling:
+
+- Data: positive `BsdGoodSpillFlag` is treated as FHC, and negative `BsdGoodSpillFlag` is treated as RHC.
+- MC: `BsdGoodSpillFlag` is not used for beam-mode determination. The fifth argument after `<MC(0)/data(1)>` must be `fhc` or `rhc`.
+- Running MC without `fhc` or `rhc` is treated as an invalid command-line argument.
 
 ### Main output content
 
@@ -314,6 +326,7 @@ Definitions used in `match_info`:
   - Data: `is_hit[bunch - 1]`
   - MC: `is_hit[0]`
   - stored in the same row order as the other `trackmatch_*` vectors.
+- `bsd_good_spill_flag`: copied from the B2 beam summary. In MC this may remain non-initialized and should not be used to infer FHC/RHC.
 - `trackmatch_true_frost_nearest_particle_id`: PDG particle id of the nearest FROST truth particle.
 - `trackmatch_true_frost_nearest_position_x/y`: nearest truth-particle position at `z = 0 mm` in FROST local coordinates.
 - `trackmatch_true_frost_nearest_tangent_x/y`: nearest truth-particle tangent, computed as `px / pz` and `py / pz`.
