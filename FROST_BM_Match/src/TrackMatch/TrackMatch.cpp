@@ -104,29 +104,33 @@ bool IsFrostHitAtBunch(const std::vector<int> *is_hit, int bm_bunch) {
   return is_hit->at(frost_bunch_index) == 1;
 }
 
-std::size_t GetFrostContainerSize(const FrostEntryData &frost) {
-  std::size_t size = 0;
-  if (frost.x_rec) size = std::max(size, frost.x_rec->size());
-  if (frost.y_rec) size = std::max(size, frost.y_rec->size());
-  return size;
+int GetFrostMatchIndex(int bm_bunch, int datatype) {
+  if (datatype == B2DataType::kMonteCarlo) {
+    // FROSTRecon MC output has no bunch structure. All meaningful
+    // reconstructed quantities are stored in index 0.
+    return 0;
+  }
+
+  // Data: BM bunch is 1..8, FROST vector index is 0..7.
+  return bm_bunch - 1;
 }
 
-bool HasFrostPositionAtIndex(const FrostEntryData &frost, int index) {
-  if (index < 0) return false;
+bool IsFrostHitForTrack(const std::vector<int> *is_hit,
+                        int bm_bunch,
+                        int datatype) {
+  if (!is_hit) {
+    return false;
+  }
 
-  const std::size_t idx = static_cast<std::size_t>(index);
+  const int frost_index = GetFrostMatchIndex(bm_bunch, datatype);
+  if (frost_index < 0) {
+    return false;
+  }
+  if (frost_index >= static_cast<int>(is_hit->size())) {
+    return false;
+  }
 
-  const bool has_x =
-    frost.x_rec &&
-    idx < frost.x_rec->size() &&
-    !frost.x_rec->at(idx).empty();
-
-  const bool has_y =
-    frost.y_rec &&
-    idx < frost.y_rec->size() &&
-    !frost.y_rec->at(idx).empty();
-
-  return has_x || has_y;
+  return is_hit->at(frost_index) == 1;
 }
 
 std::vector<int> GetFrostMatchIndices(const FrostEntryData &frost,
@@ -135,26 +139,32 @@ std::vector<int> GetFrostMatchIndices(const FrostEntryData &frost,
                                       int datatype) {
   std::vector<int> indices;
 
-  if (datatype == B2DataType::kRealData) {
-    const int frost_bunch_index = bm_bunch - 1;
-    if (frost_bunch_index < 0 || frost_bunch_index >= NUMBER_OF_BUNCHES) {
-      return indices;
-    }
-    if (!IsFrostHitAtBunch(is_hit, bm_bunch)) {
-      return indices;
-    }
-    indices.push_back(frost_bunch_index);
+  const int frost_index = GetFrostMatchIndex(bm_bunch, datatype);
+  if (frost_index < 0) {
     return indices;
   }
 
-  // MC has no physical beam bunch. Do not use bm_bunch, which is usually 0.
-  // Instead, use all FROST reconstructed position containers that actually
-  // contain x_rec or y_rec candidates.
-  const std::size_t nindices = GetFrostContainerSize(frost);
-  for (std::size_t i = 0; i < nindices; ++i) {
-    if (HasFrostPositionAtIndex(frost, static_cast<int>(i))) {
-      indices.push_back(static_cast<int>(i));
-    }
+  // Data: require is_hit[bm_bunch - 1].
+  // MC: require is_hit[0]. FROSTRecon MC output stores all meaningful
+  // reconstructed quantities in index 0.
+  if (!IsFrostHitForTrack(is_hit, bm_bunch, datatype)) {
+    return indices;
+  }
+
+  bool has_position = false;
+  if (frost.x_rec &&
+      frost_index < static_cast<int>(frost.x_rec->size()) &&
+      !frost.x_rec->at(frost_index).empty()) {
+    has_position = true;
+  }
+  if (frost.y_rec &&
+      frost_index < static_cast<int>(frost.y_rec->size()) &&
+      !frost.y_rec->at(frost_index).empty()) {
+    has_position = true;
+  }
+
+  if (has_position) {
+    indices.push_back(frost_index);
   }
 
   return indices;
@@ -164,15 +174,7 @@ Int_t GetFrostHitValueForTrack(const FrostEntryData &frost,
                                const std::vector<int> *is_hit,
                                int bm_bunch,
                                int datatype) {
-  if (datatype == B2DataType::kRealData) {
-    return IsFrostHitAtBunch(is_hit, bm_bunch) ? 1 : 0;
-  }
-
-  // MC has no bunch. Treat the presence of reconstructed FROST positions
-  // as the hit flag for the track-match output.
-  const std::vector<int> indices =
-    GetFrostMatchIndices(frost, is_hit, bm_bunch, datatype);
-  return indices.empty() ? 0 : 1;
+  return IsFrostHitForTrack(is_hit, bm_bunch, datatype) ? 1 : 0;
 }
 
 double GetFrostPositionScale(int view, int datatype) {
