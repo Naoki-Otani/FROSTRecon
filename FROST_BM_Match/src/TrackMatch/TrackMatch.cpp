@@ -3,6 +3,7 @@
 #include <numeric>
 #include <algorithm>
 #include <iostream>
+#include <cmath>
 #include <memory>
 #include <map>
 #include <string>
@@ -87,6 +88,11 @@ struct TrackMatchRow {
   Double_t dtanx = B2_NON_INITIALIZED_VALUE;
   Double_t dtany = B2_NON_INITIALIZED_VALUE;
   Int_t frost_is_hit = -1;
+  Int_t true_frost_nearest_particle_id = B2_NON_INITIALIZED_VALUE;
+  Double_t true_frost_nearest_position_x = B2_NON_INITIALIZED_VALUE;
+  Double_t true_frost_nearest_position_y = B2_NON_INITIALIZED_VALUE;
+  Double_t true_frost_nearest_tangent_x = B2_NON_INITIALIZED_VALUE;
+  Double_t true_frost_nearest_tangent_y = B2_NON_INITIALIZED_VALUE;
 };
 
 struct NearestFrostPositionResult {
@@ -94,6 +100,27 @@ struct NearestFrostPositionResult {
   double frost_position = B2_NON_INITIALIZED_VALUE;
   double diff = B2_NON_INITIALIZED_VALUE;
 };
+
+struct TrueFrostParticleInfo {
+  std::vector<int> particle_id;
+  std::vector<double> position_x;
+  std::vector<double> position_y;
+  std::vector<double> tangent_x;
+  std::vector<double> tangent_y;
+};
+
+struct NearestTrueFrostParticleResult {
+  bool found = false;
+  Int_t particle_id = B2_NON_INITIALIZED_VALUE;
+  Double_t position_x = B2_NON_INITIALIZED_VALUE;
+  Double_t position_y = B2_NON_INITIALIZED_VALUE;
+  Double_t tangent_x = B2_NON_INITIALIZED_VALUE;
+  Double_t tangent_y = B2_NON_INITIALIZED_VALUE;
+};
+
+bool IsMuonPdg(int particle_id) {
+  return particle_id == 13 || particle_id == -13;
+}
 
 bool IsFrostHitAtBunch(const std::vector<int> *is_hit, int bm_bunch) {
   // BM bunch is 1..8, while FROST is_hit index is 0..7.
@@ -296,20 +323,25 @@ bool ExtrapolateFrostMcParticleToZ0(const FrostMcEntryData &frostmc,
   return true;
 }
 
-void FillTrueFrostParticleInfo(const FrostMcEntryData &frostmc,
-                               NTBMSummary *ntbm_summary) {
-  std::vector<int> true_frost_particle_id;
-  std::vector<double> true_frost_position_x;
-  std::vector<double> true_frost_position_y;
-  std::vector<double> true_frost_tangent_x;
-  std::vector<double> true_frost_tangent_y;
+std::size_t GetTrueFrostParticleCount(const TrueFrostParticleInfo &truth) {
+  std::size_t n = truth.particle_id.size();
+  n = std::min(n, truth.position_x.size());
+  n = std::min(n, truth.position_y.size());
+  n = std::min(n, truth.tangent_x.size());
+  n = std::min(n, truth.tangent_y.size());
+  return n;
+}
+
+TrueFrostParticleInfo CollectTrueFrostParticleInfo(
+    const FrostMcEntryData &frostmc) {
+  TrueFrostParticleInfo truth;
 
   const std::size_t nparticles = GetFrostMcParticleCount(frostmc);
-  true_frost_particle_id.reserve(nparticles);
-  true_frost_position_x.reserve(nparticles);
-  true_frost_position_y.reserve(nparticles);
-  true_frost_tangent_x.reserve(nparticles);
-  true_frost_tangent_y.reserve(nparticles);
+  truth.particle_id.reserve(nparticles);
+  truth.position_x.reserve(nparticles);
+  truth.position_y.reserve(nparticles);
+  truth.tangent_x.reserve(nparticles);
+  truth.tangent_y.reserve(nparticles);
 
   constexpr double kEpsilon = 1.e-9;
   for (std::size_t iparticle = 0; iparticle < nparticles; ++iparticle) {
@@ -325,21 +357,70 @@ void FillTrueFrostParticleInfo(const FrostMcEntryData &frostmc,
       continue;
     }
 
-    true_frost_particle_id.push_back(frostmc.particle_pdg_id->at(iparticle));
-    true_frost_position_x.push_back(x_at_z0);
-    true_frost_position_y.push_back(y_at_z0);
-    true_frost_tangent_x.push_back(
+    truth.particle_id.push_back(frostmc.particle_pdg_id->at(iparticle));
+    truth.position_x.push_back(x_at_z0);
+    truth.position_y.push_back(y_at_z0);
+    truth.tangent_x.push_back(
       frostmc.particle_initial_px_mev_c->at(iparticle) / pz);
-    true_frost_tangent_y.push_back(
+    truth.tangent_y.push_back(
       frostmc.particle_initial_py_mev_c->at(iparticle) / pz);
   }
 
+  return truth;
+}
+
+void FillTrueFrostParticleInfo(const TrueFrostParticleInfo &truth,
+                               NTBMSummary *ntbm_summary) {
   ntbm_summary->SetTrueFrostParticleInfo(
-    true_frost_particle_id,
-    true_frost_position_x,
-    true_frost_position_y,
-    true_frost_tangent_x,
-    true_frost_tangent_y);
+    truth.particle_id,
+    truth.position_x,
+    truth.position_y,
+    truth.tangent_x,
+    truth.tangent_y);
+}
+
+NearestTrueFrostParticleResult FindNearestTrueFrostParticle(
+    const TrueFrostParticleInfo &truth,
+    double expected_x,
+    double expected_y) {
+  NearestTrueFrostParticleResult result;
+
+  const std::size_t nparticles = GetTrueFrostParticleCount(truth);
+  if (nparticles == 0) {
+    return result;
+  }
+
+  bool has_muon = false;
+  for (std::size_t iparticle = 0; iparticle < nparticles; ++iparticle) {
+    if (IsMuonPdg(truth.particle_id.at(iparticle))) {
+      has_muon = true;
+      break;
+    }
+  }
+
+  double best_distance2 = std::numeric_limits<double>::max();
+  for (std::size_t iparticle = 0; iparticle < nparticles; ++iparticle) {
+    const int particle_id = truth.particle_id.at(iparticle);
+    if (has_muon && !IsMuonPdg(particle_id)) {
+      continue;
+    }
+
+    const double dx = truth.position_x.at(iparticle) - expected_x;
+    const double dy = truth.position_y.at(iparticle) - expected_y;
+    const double distance2 = dx * dx + dy * dy;
+
+    if (!result.found || distance2 < best_distance2) {
+      result.found = true;
+      result.particle_id = particle_id;
+      result.position_x = truth.position_x.at(iparticle);
+      result.position_y = truth.position_y.at(iparticle);
+      result.tangent_x = truth.tangent_x.at(iparticle);
+      result.tangent_y = truth.tangent_y.at(iparticle);
+      best_distance2 = distance2;
+    }
+  }
+
+  return result;
 }
 
 void CloneTreeIfExists(TFile *input_file, TFile *output_file, const char *tree_name) {
@@ -1315,6 +1396,13 @@ int main(int argc, char *argv[]) {
         }
       }
 
+      TrueFrostParticleInfo true_frost_particles;
+      if (datatype == B2DataType::kMonteCarlo &&
+          has_frostmc_entry) {
+        true_frost_particles = CollectTrueFrostParticleInfo(frostmc_entry);
+        FillTrueFrostParticleInfo(true_frost_particles, my_ntbm);
+      }
+
       // Collect all BM 3d tracks
       int number_of_tracks = 0;
 
@@ -1368,6 +1456,28 @@ int main(int argc, char *argv[]) {
           my_ntbm->SetExtrapolatedPosition(ibmtrack, expected_position);
           row.expected_y = expected_position.at(B2View::kSideView);
           row.expected_x = expected_position.at(B2View::kTopView);
+
+          if (datatype == B2DataType::kMonteCarlo &&
+              has_frostmc_entry) {
+            const NearestTrueFrostParticleResult nearest_true_frost =
+              FindNearestTrueFrostParticle(
+                true_frost_particles,
+                row.expected_x,
+                row.expected_y);
+
+            if (nearest_true_frost.found) {
+              row.true_frost_nearest_particle_id =
+                nearest_true_frost.particle_id;
+              row.true_frost_nearest_position_x =
+                nearest_true_frost.position_x;
+              row.true_frost_nearest_position_y =
+                nearest_true_frost.position_y;
+              row.true_frost_nearest_tangent_x =
+                nearest_true_frost.tangent_x;
+              row.true_frost_nearest_tangent_y =
+                nearest_true_frost.tangent_y;
+            }
+          }
 
           const NearestFrostPositionResult nearest_y =
             FindNearestFrostPosition(frost_entry, bm_bunch, B2View::kSideView,
@@ -1426,11 +1536,6 @@ int main(int argc, char *argv[]) {
 
           rows.push_back(row);
         } // ibmtrack
-
-        if (datatype == B2DataType::kMonteCarlo &&
-            has_frostmc_entry) {
-          FillTrueFrostParticleInfo(frostmc_entry, my_ntbm);
-        }
 
         spill_match_rows.push_back(rows);
       } else {
@@ -1494,6 +1599,11 @@ int main(int argc, char *argv[]) {
     Int_t matchinfo_bsd_good_spill_flag = B2_NON_INITIALIZED_VALUE;
     Int_t matchinfo_wagasci_good_spill_flag = B2_NON_INITIALIZED_VALUE;
     Int_t matchinfo_detector_flags[8];
+    std::vector<Int_t> trackmatch_true_frost_nearest_particle_id;
+    std::vector<Double_t> trackmatch_true_frost_nearest_position_x;
+    std::vector<Double_t> trackmatch_true_frost_nearest_position_y;
+    std::vector<Double_t> trackmatch_true_frost_nearest_tangent_x;
+    std::vector<Double_t> trackmatch_true_frost_nearest_tangent_y;
 
     for (int i = 0; i < NUMBER_OF_BUNCHES; ++i) {
       matchinfo_bunch_pot[i] = B2_NON_INITIALIZED_VALUE;
@@ -1531,6 +1641,16 @@ int main(int argc, char *argv[]) {
                            "wagasci_good_spill_flag/I");
     match_info_out->Branch("detector_flags", matchinfo_detector_flags,
                            "detector_flags[8]/I");
+    match_info_out->Branch("trackmatch_true_frost_nearest_particle_id",
+                           &trackmatch_true_frost_nearest_particle_id);
+    match_info_out->Branch("trackmatch_true_frost_nearest_position_x",
+                           &trackmatch_true_frost_nearest_position_x);
+    match_info_out->Branch("trackmatch_true_frost_nearest_position_y",
+                           &trackmatch_true_frost_nearest_position_y);
+    match_info_out->Branch("trackmatch_true_frost_nearest_tangent_x",
+                           &trackmatch_true_frost_nearest_tangent_x);
+    match_info_out->Branch("trackmatch_true_frost_nearest_tangent_y",
+                           &trackmatch_true_frost_nearest_tangent_y);
 
     const Long64_t ninfo = frost_trees.match_info
       ? frost_trees.match_info->GetEntries()
@@ -1569,6 +1689,11 @@ int main(int argc, char *argv[]) {
       trackmatch_dtanx.clear();
       trackmatch_dtany.clear();
       trackmatch_frost_is_hit.clear();
+      trackmatch_true_frost_nearest_particle_id.clear();
+      trackmatch_true_frost_nearest_position_x.clear();
+      trackmatch_true_frost_nearest_position_y.clear();
+      trackmatch_true_frost_nearest_tangent_x.clear();
+      trackmatch_true_frost_nearest_tangent_y.clear();
 
       if (i < ntbm_tree->GetEntries()) {
         ntbm_tree->GetEntry(i);
@@ -1615,6 +1740,11 @@ int main(int argc, char *argv[]) {
       trackmatch_dtanx.reserve(rows.size());
       trackmatch_dtany.reserve(rows.size());
       trackmatch_frost_is_hit.reserve(rows.size());
+      trackmatch_true_frost_nearest_particle_id.reserve(rows.size());
+      trackmatch_true_frost_nearest_position_x.reserve(rows.size());
+      trackmatch_true_frost_nearest_position_y.reserve(rows.size());
+      trackmatch_true_frost_nearest_tangent_x.reserve(rows.size());
+      trackmatch_true_frost_nearest_tangent_y.reserve(rows.size());
 
       for (const auto &row : rows) {
         trackmatch_has_match.push_back(row.has_match);
@@ -1633,8 +1763,17 @@ int main(int argc, char *argv[]) {
         trackmatch_tangent_y.push_back(row.tangent_y);
         trackmatch_dtanx.push_back(row.dtanx);
         trackmatch_dtany.push_back(row.dtany);
-
         trackmatch_frost_is_hit.push_back(row.frost_is_hit);
+        trackmatch_true_frost_nearest_particle_id.push_back(
+          row.true_frost_nearest_particle_id);
+        trackmatch_true_frost_nearest_position_x.push_back(
+          row.true_frost_nearest_position_x);
+        trackmatch_true_frost_nearest_position_y.push_back(
+          row.true_frost_nearest_position_y);
+        trackmatch_true_frost_nearest_tangent_x.push_back(
+          row.true_frost_nearest_tangent_x);
+        trackmatch_true_frost_nearest_tangent_y.push_back(
+          row.true_frost_nearest_tangent_y);
       }
 
       match_info_out->Fill();
