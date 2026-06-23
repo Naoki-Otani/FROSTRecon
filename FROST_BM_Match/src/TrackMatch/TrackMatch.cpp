@@ -1111,6 +1111,16 @@ void TransferBabyMindTrackInfo(const B2SpillSummary &spill_summary,
 void TransferMCInfo(const B2SpillSummary &spill_summary, NTBMSummary *ntbm_summary) {
   auto it_event = spill_summary.BeginTrueEvent();
   const auto *event = it_event.Next();
+
+  if (!event) {
+    BOOST_LOG_TRIVIAL(warning)
+      << "No true event found in this spill. "
+      << "Skip MC normalization and total cross section transfer.";
+    ntbm_summary->SetNormalization(B2_NON_INITIALIZED_VALUE);
+    ntbm_summary->SetTotalCrossSection(B2_NON_INITIALIZED_VALUE);
+    return;
+  }
+
   ntbm_summary->SetNormalization(event->GetNormalization());
   ntbm_summary->SetTotalCrossSection(event->GetTotalCrossSection());
 }
@@ -1192,12 +1202,9 @@ int main(int argc, char *argv[]) {
                                << input_spill_summary.GetBeamSummary().GetTimestamp();
 
       TransferBeamInfo(input_spill_summary, my_ntbm);
-      // MC truth / normalization information is intentionally left for the
-      // final implementation phase, after the reconstructed matching path is
-      // validated for MC input.
-      // if (datatype == B2DataType::kMonteCarlo) {
-      //   TransferMCInfo(input_spill_summary, my_ntbm);
-      // }
+      if (datatype == B2DataType::kMonteCarlo) {
+        TransferMCInfo(input_spill_summary, my_ntbm);
+      }
 
       FrostEntryData frost_entry;
       if (nspill < frost_trees.frost_input->GetEntries()) {
