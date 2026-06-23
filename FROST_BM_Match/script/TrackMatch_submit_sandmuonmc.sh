@@ -1,0 +1,39 @@
+#!/bin/bash
+
+set -eu
+
+# ========= path settings =========
+ROOT_IN_DIR="/group/nu/ninja/work/otani/FROSTReconData/SandmuonMC/5-FROSTRecon"
+ROOT_OUT_DIR="/group/nu/ninja/work/otani/FROSTReconData/SandmuonMC/6-TrackMatch"
+OUT_DIR="$ROOT_OUT_DIR/out"
+
+SIF="/home/nu/notani/wagasci_ana_0.2.4.sif"
+TrackMatch="/home/nu/notani/FROSTRecon/FROST_BM_Match/bin/TrackMatch/TrackMatch"
+
+QUEUE="s"
+
+# ========= prepare directories =========
+mkdir -p "$ROOT_OUT_DIR" "$OUT_DIR"
+
+# ========= loop over all input files =========
+for input_file in "$ROOT_IN_DIR"/*.root; do
+    # Safeguard for the case where the glob matches nothing
+    [ -e "$input_file" ] || continue
+
+    input_base=$(basename "$input_file")
+    suffix="${input_base#sandmuonmc_frostrecon_}"
+    root_out_file="$ROOT_OUT_DIR/sandmuonmc_trackmatch_${suffix}"
+    out_file="$OUT_DIR/sandmuonmc_trackmatch_${suffix%.root}.out"
+
+    echo "Submitting job for:"
+    echo "  input ROOT file : $input_file"
+    echo "  output ROOT file : $root_out_file"
+    echo "  OUT : $out_file"
+
+    bsub -q "$QUEUE" -o "$out_file" -N \
+        apptainer run --bind /hsm/nu/ --bind /group/nu/ "$SIF" \
+        "$TrackMatch" \
+        "$input_file" \
+        "$root_out_file" \
+        0 0 fhc
+done
