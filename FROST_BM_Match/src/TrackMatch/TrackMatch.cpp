@@ -10,6 +10,7 @@
 #include <limits>
 #include <cctype>
 #include <stdexcept>
+#include <tuple>
 
 // boost includes
 #include <boost/log/core.hpp>
@@ -154,6 +155,22 @@ struct TrackMatchRow {
   Double_t dtanx = B2_NON_INITIALIZED_VALUE;
   Double_t dtany = B2_NON_INITIALIZED_VALUE;
   Int_t frost_is_hit = -1;
+  Double_t external_expected_x = B2_NON_INITIALIZED_VALUE;
+  Double_t external_expected_y = B2_NON_INITIALIZED_VALUE;
+  Double_t external_tangent_x = B2_NON_INITIALIZED_VALUE;
+  Double_t external_tangent_y = B2_NON_INITIALIZED_VALUE;
+  Double_t external_chi2_x = B2_NON_INITIALIZED_VALUE;
+  Double_t external_chi2_y = B2_NON_INITIALIZED_VALUE;
+  Int_t external_ndof_x = B2_NON_INITIALIZED_VALUE;
+  Int_t external_ndof_y = B2_NON_INITIALIZED_VALUE;
+  Int_t external_num_planes_upstream_wagasci_x = 0;
+  Int_t external_num_planes_upstream_wagasci_y = 0;
+  Int_t external_num_planes_proton_module_x = 0;
+  Int_t external_num_planes_proton_module_y = 0;
+  Int_t external_num_planes_downstream_wagasci_x = 0;
+  Int_t external_num_planes_downstream_wagasci_y = 0;
+  Int_t external_num_planes_baby_mind_x = 0;
+  Int_t external_num_planes_baby_mind_y = 0;
   Int_t true_frost_nearest_particle_id = B2_NON_INITIALIZED_VALUE;
   Double_t true_frost_nearest_position_x = B2_NON_INITIALIZED_VALUE;
   Double_t true_frost_nearest_position_y = B2_NON_INITIALIZED_VALUE;
@@ -165,6 +182,62 @@ struct NearestFrostPositionResult {
   bool found = false;
   double frost_position = B2_NON_INITIALIZED_VALUE;
   double diff = B2_NON_INITIALIZED_VALUE;
+};
+
+struct ExternalFitGroupKey {
+  int detector_id = -1;
+  int view = -1;
+  int plane = -1;
+
+  bool operator<(const ExternalFitGroupKey &rhs) const {
+    return std::tie(detector_id, view, plane) <
+           std::tie(rhs.detector_id, rhs.view, rhs.plane);
+  }
+};
+
+struct ExternalFitRawHit {
+  int detector_id = -1;
+  int view = -1;
+  int plane = -1;
+  double position = B2_NON_INITIALIZED_VALUE;
+  double z = B2_NON_INITIALIZED_VALUE;
+  double position_error = B2_NON_INITIALIZED_VALUE;
+  double z_error = B2_NON_INITIALIZED_VALUE;
+};
+
+struct ExternalFitPoint {
+  int detector_id = -1;
+  int view = -1;
+  int plane = -1;
+  double position = B2_NON_INITIALIZED_VALUE;
+  double z = B2_NON_INITIALIZED_VALUE;
+  double position_error_low = B2_NON_INITIALIZED_VALUE;
+  double position_error_high = B2_NON_INITIALIZED_VALUE;
+  double z_error_low = B2_NON_INITIALIZED_VALUE;
+  double z_error_high = B2_NON_INITIALIZED_VALUE;
+};
+
+struct ExternalFitOneViewResult {
+  bool success = false;
+  double tangent = B2_NON_INITIALIZED_VALUE;
+  double intercept = B2_NON_INITIALIZED_VALUE;
+  double chi2 = B2_NON_INITIALIZED_VALUE;
+  int ndof = B2_NON_INITIALIZED_VALUE;
+};
+
+struct ExternalTrackFitResult {
+  ExternalFitOneViewResult x_fit;
+  ExternalFitOneViewResult y_fit;
+  double expected_x = B2_NON_INITIALIZED_VALUE;
+  double expected_y = B2_NON_INITIALIZED_VALUE;
+  int num_planes_upstream_wagasci_x = 0;
+  int num_planes_upstream_wagasci_y = 0;
+  int num_planes_proton_module_x = 0;
+  int num_planes_proton_module_y = 0;
+  int num_planes_downstream_wagasci_x = 0;
+  int num_planes_downstream_wagasci_y = 0;
+  int num_planes_baby_mind_x = 0;
+  int num_planes_baby_mind_y = 0;
 };
 
 struct TrueFrostParticleInfo {
@@ -851,6 +924,343 @@ std::vector<double> CalculateExpectedPosition(NTBMSummary *ntbm, int itrack, dou
 
 }
 
+bool IsExternalFitDetector(int detector_id) {
+  return detector_id == B2Detector::kWagasciUpstream ||
+         detector_id == B2Detector::kProtonModule ||
+         detector_id == B2Detector::kWagasciDownstream ||
+         detector_id == B2Detector::kBabyMind;
+}
+
+TVector3 GetDetectorCenterPosition(int detector_id) {
+  switch (detector_id) {
+    case B2Detector::kWagasciUpstream:
+      return TVector3(WAGASCI_UPSTREAM_POS_X,
+                      WAGASCI_UPSTREAM_POS_Y,
+                      WAGASCI_UPSTREAM_POS_Z);
+    case B2Detector::kProtonModule:
+      return TVector3(PROTON_MODULE_POS_X,
+                      PROTON_MODULE_POS_Y,
+                      PROTON_MODULE_POS_Z);
+    case B2Detector::kWagasciDownstream:
+      return TVector3(WAGASCI_DOWNSTREAM_POS_X,
+                      WAGASCI_DOWNSTREAM_POS_Y,
+                      WAGASCI_DOWNSTREAM_POS_Z);
+    case B2Detector::kBabyMind:
+      return TVector3(BABYMIND_POS_X,
+                      BABYMIND_POS_Y,
+                      BABYMIND_POS_Z);
+    default:
+      return TVector3(0., 0., 0.);
+  }
+}
+
+TVector3 ConvertDetectorLocalToFrostCoordinate(int detector_id,
+                                               const TVector3 &local_position) {
+  const TVector3 detector_center = GetDetectorCenterPosition(detector_id);
+  TVector3 position = local_position + detector_center;
+
+  position.SetX(position.X() - NINJA_POS_X - NINJA_FROST_POS_X);
+  position.SetY(position.Y() - NINJA_POS_Y - NINJA_FROST_POS_Y);
+  position.SetZ(position.Z() - NINJA_POS_Z_FROST - NINJA_FROST_POS_Z);
+
+  return position;
+}
+
+bool UseHitForExternalTrackFit(int detector_id, int view, int plane) {
+  if (!IsExternalFitDetector(detector_id)) {
+    return false;
+  }
+  if (view != B2View::kTopView && view != B2View::kSideView) {
+    return false;
+  }
+
+  // Keep the same Baby MIND plane selection as the existing BabyMIND-only fit:
+  // side view (y-z, bending view) uses only the upstream three planes,
+  // while top view (x-z, non-bending view) uses all Baby MIND planes.
+  if (detector_id == B2Detector::kBabyMind &&
+      view == B2View::kSideView &&
+      plane > 2) {
+    return false;
+  }
+
+  return true;
+}
+
+void IncrementExternalPlaneCount(ExternalTrackFitResult &result,
+                                 int detector_id,
+                                 int view) {
+  const bool is_x_view = (view == B2View::kTopView);
+  const bool is_y_view = (view == B2View::kSideView);
+
+  if (!is_x_view && !is_y_view) {
+    return;
+  }
+
+  switch (detector_id) {
+    case B2Detector::kWagasciUpstream:
+      if (is_x_view) {
+        result.num_planes_upstream_wagasci_x++;
+      } else {
+        result.num_planes_upstream_wagasci_y++;
+      }
+      break;
+    case B2Detector::kProtonModule:
+      if (is_x_view) {
+        result.num_planes_proton_module_x++;
+      } else {
+        result.num_planes_proton_module_y++;
+      }
+      break;
+    case B2Detector::kWagasciDownstream:
+      if (is_x_view) {
+        result.num_planes_downstream_wagasci_x++;
+      } else {
+        result.num_planes_downstream_wagasci_y++;
+      }
+      break;
+    case B2Detector::kBabyMind:
+      if (is_x_view) {
+        result.num_planes_baby_mind_x++;
+      } else {
+        result.num_planes_baby_mind_y++;
+      }
+      break;
+    default:
+      break;
+  }
+}
+
+std::vector<ExternalFitRawHit> CollectExternalFitRawHits(
+    const B2TrackSummary *track,
+    int datatype,
+    B2Dimension &dimension) {
+  std::vector<ExternalFitRawHit> raw_hits;
+
+  auto it_cluster = track->BeginCluster();
+  while (const auto *cluster = it_cluster.Next()) {
+    auto it_hit = cluster->BeginHit();
+    while (const auto *hit = it_hit.Next()) {
+      const int detector_id = hit->GetDetectorId();
+      const int view = hit->GetView();
+      const int plane = hit->GetPlane();
+
+      if (!UseHitForExternalTrackFit(detector_id, view, plane)) {
+        continue;
+      }
+
+      const unsigned int slot =
+        hit->GetSlot().GetValue(hit->GetReadout1());
+
+      TVector3 local_position;
+      if (!dimension.GetPosition(
+            static_cast<B2Detector>(detector_id),
+            static_cast<B2View>(view),
+            static_cast<unsigned int>(plane),
+            slot,
+            local_position)) {
+        BOOST_LOG_TRIVIAL(debug)
+          << "Skip external-fit hit because position lookup failed"
+          << " : detector=" << detector_id
+          << ", view=" << view
+          << ", plane=" << plane
+          << ", slot=" << slot;
+        continue;
+      }
+
+      // Keep the same Baby MIND data z correction as the existing fit.
+      if (detector_id == B2Detector::kBabyMind &&
+          datatype == B2DataType::kRealData &&
+          plane >= 2) {
+        local_position.SetZ(local_position.Z() + BM_SCI_CORRECTION);
+      }
+
+      TVector3 local_error;
+      if (!B2Dimension::GetError(
+            static_cast<B2Detector>(detector_id),
+            static_cast<B2View>(view),
+            static_cast<unsigned int>(plane),
+            slot,
+            local_error)) {
+        BOOST_LOG_TRIVIAL(debug)
+          << "Skip external-fit hit because error lookup failed"
+          << " : detector=" << detector_id
+          << ", view=" << view
+          << ", plane=" << plane
+          << ", slot=" << slot;
+        continue;
+      }
+
+      const TVector3 frost_position =
+        ConvertDetectorLocalToFrostCoordinate(detector_id, local_position);
+
+      ExternalFitRawHit raw_hit;
+      raw_hit.detector_id = detector_id;
+      raw_hit.view = view;
+      raw_hit.plane = plane;
+      raw_hit.z = frost_position.Z();
+      raw_hit.z_error = local_error.Z();
+
+      if (view == B2View::kTopView) {
+        raw_hit.position = frost_position.X();
+        raw_hit.position_error = local_error.X();
+      } else if (view == B2View::kSideView) {
+        raw_hit.position = frost_position.Y();
+        raw_hit.position_error = local_error.Y();
+      }
+
+      raw_hits.push_back(raw_hit);
+    }
+  }
+
+  return raw_hits;
+}
+
+std::vector<ExternalFitPoint> BuildExternalFitPoints(
+    const std::vector<ExternalFitRawHit> &raw_hits) {
+  std::map<ExternalFitGroupKey, std::vector<ExternalFitRawHit>> grouped_hits;
+
+  for (const auto &raw_hit : raw_hits) {
+    ExternalFitGroupKey key;
+    key.detector_id = raw_hit.detector_id;
+    key.view = raw_hit.view;
+    key.plane = raw_hit.plane;
+    grouped_hits[key].push_back(raw_hit);
+  }
+
+  std::vector<ExternalFitPoint> fit_points;
+  for (const auto &group : grouped_hits) {
+    const auto &key = group.first;
+    const auto &hits = group.second;
+    if (hits.empty()) {
+      continue;
+    }
+
+    double position_sum = 0.;
+    double position_min = std::numeric_limits<double>::max();
+    double position_max = -std::numeric_limits<double>::max();
+    double z_min = std::numeric_limits<double>::max();
+    double z_max = -std::numeric_limits<double>::max();
+
+    for (const auto &hit : hits) {
+      position_sum += hit.position;
+      position_min = std::min(position_min,
+                              hit.position - hit.position_error);
+      position_max = std::max(position_max,
+                              hit.position + hit.position_error);
+      z_min = std::min(z_min, hit.z - hit.z_error);
+      z_max = std::max(z_max, hit.z + hit.z_error);
+    }
+
+    ExternalFitPoint point;
+    point.detector_id = key.detector_id;
+    point.view = key.view;
+    point.plane = key.plane;
+    point.position = position_sum / static_cast<double>(hits.size());
+    point.z = 0.5 * (z_min + z_max);
+    point.position_error_low = point.position - position_min;
+    point.position_error_high = position_max - point.position;
+    point.z_error_low = point.z - z_min;
+    point.z_error_high = z_max - point.z;
+    fit_points.push_back(point);
+  }
+
+  return fit_points;
+}
+
+ExternalFitOneViewResult FitExternalOneView(
+    const std::vector<ExternalFitPoint> &fit_points,
+    int view) {
+  ExternalFitOneViewResult result;
+
+  std::vector<Double_t> z_values;
+  std::vector<Double_t> position_values;
+  std::vector<Double_t> z_error_low;
+  std::vector<Double_t> z_error_high;
+  std::vector<Double_t> position_error_low;
+  std::vector<Double_t> position_error_high;
+
+  for (const auto &point : fit_points) {
+    if (point.view != view) {
+      continue;
+    }
+    z_values.push_back(point.z);
+    position_values.push_back(point.position);
+    z_error_low.push_back(point.z_error_low);
+    z_error_high.push_back(point.z_error_high);
+    position_error_low.push_back(point.position_error_low);
+    position_error_high.push_back(point.position_error_high);
+  }
+
+  if (z_values.size() < 2) {
+    return result;
+  }
+
+  const auto minmax_z =
+    std::minmax_element(z_values.begin(), z_values.end());
+  if (std::fabs(*minmax_z.second - *minmax_z.first) < 1.e-9) {
+    return result;
+  }
+
+  TGraphAsymmErrors graph(
+    static_cast<int>(z_values.size()),
+    z_values.data(),
+    position_values.data(),
+    z_error_low.data(),
+    z_error_high.data(),
+    position_error_low.data(),
+    position_error_high.data());
+
+  static int function_id = 0;
+  TF1 linear(Form("external_linear_%d_%d", view, function_id++),
+             "[0] * x + [1]", -5000., 5000.);
+  linear.SetParameter(0, 0.);
+  linear.SetParameter(1, 0.);
+
+  const int fit_status = graph.Fit(&linear, "Q");
+  if (fit_status != 0) {
+    return result;
+  }
+
+  result.success = true;
+  result.tangent = linear.GetParameter(0);
+  result.intercept = linear.GetParameter(1);
+  result.chi2 = linear.GetChisquare();
+  result.ndof = linear.GetNDF();
+
+  return result;
+}
+
+ExternalTrackFitResult FitExternalTrackToFrost(
+    const B2TrackSummary *track,
+    int datatype,
+    B2Dimension &dimension) {
+  ExternalTrackFitResult result;
+
+  const std::vector<ExternalFitRawHit> raw_hits =
+    CollectExternalFitRawHits(track, datatype, dimension);
+  const std::vector<ExternalFitPoint> fit_points =
+    BuildExternalFitPoints(raw_hits);
+
+  for (const auto &point : fit_points) {
+    IncrementExternalPlaneCount(result, point.detector_id, point.view);
+  }
+
+  result.x_fit = FitExternalOneView(fit_points, B2View::kTopView);
+  result.y_fit = FitExternalOneView(fit_points, B2View::kSideView);
+
+  // The external fit is performed in the FROST local coordinate system.
+  // The FROST scintillator center is z = 0, so the expected position at
+  // FROST is the intercept of the fitted line.
+  if (result.x_fit.success) {
+    result.expected_x = result.x_fit.intercept;
+  }
+  if (result.y_fit.success) {
+    result.expected_y = result.y_fit.intercept;
+  }
+
+  return result;
+}
+
 bool NinjaHitExpected(NTBMSummary *ntbm, int itrack, double z_shift) {
 
   //top view: x, side view: y
@@ -1166,7 +1576,8 @@ void TransferBabyMindTrackInfo(const B2SpillSummary &spill_summary,
 			       NTBMSummary *ntbm_summary,
 			       int datatype,
 			       B2Dimension &dimension,
-			       BeamMode mc_beam_mode) {
+			       BeamMode mc_beam_mode,
+			       std::vector<ExternalTrackFitResult> *external_fit_results) {
 
   int itrack = 0;
   int bsd_good_spill_flag = B2_NON_INITIALIZED_VALUE;
@@ -1306,6 +1717,10 @@ void TransferBabyMindTrackInfo(const B2SpillSummary &spill_summary,
       // MyFuncCalculateTrackLength() when accessing hit->GetPlane().
       // ntbm_summary->SetTrackLengthTotal(itrack, track->GetTrackLengthTotal());
 
+      if (external_fit_results) {
+        external_fit_results->push_back(
+          FitExternalTrackToFrost(track, datatype, dimension));
+      }
 
       itrack++;
 
@@ -1523,8 +1938,10 @@ int main(int argc, char *argv[]) {
       // Extrapolate BabyMIND tracks to the NINJA FROST position
       // and get the positions to match each BabyMIND track
       if ( number_of_tracks > 0 ) {
+        std::vector<ExternalTrackFitResult> external_fit_results;
+
 	      TransferBabyMindTrackInfo(
-          input_spill_summary, my_ntbm, datatype, dimension_, mc_beam_mode);
+          input_spill_summary, my_ntbm, datatype, dimension_, mc_beam_mode, &external_fit_results);
 
         std::vector<TrackMatchRow> rows;
 
@@ -1548,6 +1965,35 @@ int main(int argc, char *argv[]) {
           my_ntbm->SetExtrapolatedPosition(ibmtrack, expected_position);
           row.expected_y = expected_position.at(B2View::kSideView);
           row.expected_x = expected_position.at(B2View::kTopView);
+
+          if (ibmtrack < static_cast<int>(external_fit_results.size())) {
+            const ExternalTrackFitResult &external_fit =
+              external_fit_results.at(ibmtrack);
+            row.external_expected_x = external_fit.expected_x;
+            row.external_expected_y = external_fit.expected_y;
+            row.external_tangent_x = external_fit.x_fit.tangent;
+            row.external_tangent_y = external_fit.y_fit.tangent;
+            row.external_chi2_x = external_fit.x_fit.chi2;
+            row.external_chi2_y = external_fit.y_fit.chi2;
+            row.external_ndof_x = external_fit.x_fit.ndof;
+            row.external_ndof_y = external_fit.y_fit.ndof;
+            row.external_num_planes_upstream_wagasci_x =
+              external_fit.num_planes_upstream_wagasci_x;
+            row.external_num_planes_upstream_wagasci_y =
+              external_fit.num_planes_upstream_wagasci_y;
+            row.external_num_planes_proton_module_x =
+              external_fit.num_planes_proton_module_x;
+            row.external_num_planes_proton_module_y =
+              external_fit.num_planes_proton_module_y;
+            row.external_num_planes_downstream_wagasci_x =
+              external_fit.num_planes_downstream_wagasci_x;
+            row.external_num_planes_downstream_wagasci_y =
+              external_fit.num_planes_downstream_wagasci_y;
+            row.external_num_planes_baby_mind_x =
+              external_fit.num_planes_baby_mind_x;
+            row.external_num_planes_baby_mind_y =
+              external_fit.num_planes_baby_mind_y;
+          }
 
           if (datatype == B2DataType::kMonteCarlo &&
               has_frostmc_entry) {
@@ -1684,6 +2130,22 @@ int main(int argc, char *argv[]) {
     std::vector<Double_t> trackmatch_dtanx;
     std::vector<Double_t> trackmatch_dtany;
     std::vector<Int_t> trackmatch_frost_is_hit;
+    std::vector<Double_t> trackmatch_external_expected_x;
+    std::vector<Double_t> trackmatch_external_expected_y;
+    std::vector<Double_t> trackmatch_external_tangent_x;
+    std::vector<Double_t> trackmatch_external_tangent_y;
+    std::vector<Double_t> trackmatch_external_chi2_x;
+    std::vector<Double_t> trackmatch_external_chi2_y;
+    std::vector<Int_t> trackmatch_external_ndof_x;
+    std::vector<Int_t> trackmatch_external_ndof_y;
+    std::vector<Int_t> trackmatch_external_num_planes_upstream_wagasci_x;
+    std::vector<Int_t> trackmatch_external_num_planes_upstream_wagasci_y;
+    std::vector<Int_t> trackmatch_external_num_planes_proton_module_x;
+    std::vector<Int_t> trackmatch_external_num_planes_proton_module_y;
+    std::vector<Int_t> trackmatch_external_num_planes_downstream_wagasci_x;
+    std::vector<Int_t> trackmatch_external_num_planes_downstream_wagasci_y;
+    std::vector<Int_t> trackmatch_external_num_planes_baby_mind_x;
+    std::vector<Int_t> trackmatch_external_num_planes_baby_mind_y;
     Double_t matchinfo_spill_pot = B2_NON_INITIALIZED_VALUE;
     Double_t matchinfo_bunch_pot[NUMBER_OF_BUNCHES];
     Int_t matchinfo_bsd_spill_number = B2_NON_INITIALIZED_VALUE;
@@ -1721,6 +2183,38 @@ int main(int argc, char *argv[]) {
     match_info_out->Branch("trackmatch_dtanx", &trackmatch_dtanx);
     match_info_out->Branch("trackmatch_dtany", &trackmatch_dtany);
     match_info_out->Branch("trackmatch_frost_is_hit", &trackmatch_frost_is_hit);
+    match_info_out->Branch("trackmatch_external_expected_x",
+                           &trackmatch_external_expected_x);
+    match_info_out->Branch("trackmatch_external_expected_y",
+                           &trackmatch_external_expected_y);
+    match_info_out->Branch("trackmatch_external_tangent_x",
+                           &trackmatch_external_tangent_x);
+    match_info_out->Branch("trackmatch_external_tangent_y",
+                           &trackmatch_external_tangent_y);
+    match_info_out->Branch("trackmatch_external_chi2_x",
+                           &trackmatch_external_chi2_x);
+    match_info_out->Branch("trackmatch_external_chi2_y",
+                           &trackmatch_external_chi2_y);
+    match_info_out->Branch("trackmatch_external_ndof_x",
+                           &trackmatch_external_ndof_x);
+    match_info_out->Branch("trackmatch_external_ndof_y",
+                           &trackmatch_external_ndof_y);
+    match_info_out->Branch("trackmatch_external_num_planes_upstream_wagasci_x",
+                           &trackmatch_external_num_planes_upstream_wagasci_x);
+    match_info_out->Branch("trackmatch_external_num_planes_upstream_wagasci_y",
+                           &trackmatch_external_num_planes_upstream_wagasci_y);
+    match_info_out->Branch("trackmatch_external_num_planes_proton_module_x",
+                           &trackmatch_external_num_planes_proton_module_x);
+    match_info_out->Branch("trackmatch_external_num_planes_proton_module_y",
+                           &trackmatch_external_num_planes_proton_module_y);
+    match_info_out->Branch("trackmatch_external_num_planes_downstream_wagasci_x",
+                           &trackmatch_external_num_planes_downstream_wagasci_x);
+    match_info_out->Branch("trackmatch_external_num_planes_downstream_wagasci_y",
+                           &trackmatch_external_num_planes_downstream_wagasci_y);
+    match_info_out->Branch("trackmatch_external_num_planes_baby_mind_x",
+                           &trackmatch_external_num_planes_baby_mind_x);
+    match_info_out->Branch("trackmatch_external_num_planes_baby_mind_y",
+                           &trackmatch_external_num_planes_baby_mind_y);
     match_info_out->Branch("spill_pot", &matchinfo_spill_pot, "spill_pot/D");
     match_info_out->Branch("bunch_pot", matchinfo_bunch_pot,
                            Form("bunch_pot[%d]/D", NUMBER_OF_BUNCHES));
@@ -1781,6 +2275,22 @@ int main(int argc, char *argv[]) {
       trackmatch_dtanx.clear();
       trackmatch_dtany.clear();
       trackmatch_frost_is_hit.clear();
+      trackmatch_external_expected_x.clear();
+      trackmatch_external_expected_y.clear();
+      trackmatch_external_tangent_x.clear();
+      trackmatch_external_tangent_y.clear();
+      trackmatch_external_chi2_x.clear();
+      trackmatch_external_chi2_y.clear();
+      trackmatch_external_ndof_x.clear();
+      trackmatch_external_ndof_y.clear();
+      trackmatch_external_num_planes_upstream_wagasci_x.clear();
+      trackmatch_external_num_planes_upstream_wagasci_y.clear();
+      trackmatch_external_num_planes_proton_module_x.clear();
+      trackmatch_external_num_planes_proton_module_y.clear();
+      trackmatch_external_num_planes_downstream_wagasci_x.clear();
+      trackmatch_external_num_planes_downstream_wagasci_y.clear();
+      trackmatch_external_num_planes_baby_mind_x.clear();
+      trackmatch_external_num_planes_baby_mind_y.clear();
       trackmatch_true_frost_nearest_particle_id.clear();
       trackmatch_true_frost_nearest_position_x.clear();
       trackmatch_true_frost_nearest_position_y.clear();
@@ -1832,6 +2342,22 @@ int main(int argc, char *argv[]) {
       trackmatch_dtanx.reserve(rows.size());
       trackmatch_dtany.reserve(rows.size());
       trackmatch_frost_is_hit.reserve(rows.size());
+      trackmatch_external_expected_x.reserve(rows.size());
+      trackmatch_external_expected_y.reserve(rows.size());
+      trackmatch_external_tangent_x.reserve(rows.size());
+      trackmatch_external_tangent_y.reserve(rows.size());
+      trackmatch_external_chi2_x.reserve(rows.size());
+      trackmatch_external_chi2_y.reserve(rows.size());
+      trackmatch_external_ndof_x.reserve(rows.size());
+      trackmatch_external_ndof_y.reserve(rows.size());
+      trackmatch_external_num_planes_upstream_wagasci_x.reserve(rows.size());
+      trackmatch_external_num_planes_upstream_wagasci_y.reserve(rows.size());
+      trackmatch_external_num_planes_proton_module_x.reserve(rows.size());
+      trackmatch_external_num_planes_proton_module_y.reserve(rows.size());
+      trackmatch_external_num_planes_downstream_wagasci_x.reserve(rows.size());
+      trackmatch_external_num_planes_downstream_wagasci_y.reserve(rows.size());
+      trackmatch_external_num_planes_baby_mind_x.reserve(rows.size());
+      trackmatch_external_num_planes_baby_mind_y.reserve(rows.size());
       trackmatch_true_frost_nearest_particle_id.reserve(rows.size());
       trackmatch_true_frost_nearest_position_x.reserve(rows.size());
       trackmatch_true_frost_nearest_position_y.reserve(rows.size());
@@ -1856,6 +2382,30 @@ int main(int argc, char *argv[]) {
         trackmatch_dtanx.push_back(row.dtanx);
         trackmatch_dtany.push_back(row.dtany);
         trackmatch_frost_is_hit.push_back(row.frost_is_hit);
+        trackmatch_external_expected_x.push_back(row.external_expected_x);
+        trackmatch_external_expected_y.push_back(row.external_expected_y);
+        trackmatch_external_tangent_x.push_back(row.external_tangent_x);
+        trackmatch_external_tangent_y.push_back(row.external_tangent_y);
+        trackmatch_external_chi2_x.push_back(row.external_chi2_x);
+        trackmatch_external_chi2_y.push_back(row.external_chi2_y);
+        trackmatch_external_ndof_x.push_back(row.external_ndof_x);
+        trackmatch_external_ndof_y.push_back(row.external_ndof_y);
+        trackmatch_external_num_planes_upstream_wagasci_x.push_back(
+          row.external_num_planes_upstream_wagasci_x);
+        trackmatch_external_num_planes_upstream_wagasci_y.push_back(
+          row.external_num_planes_upstream_wagasci_y);
+        trackmatch_external_num_planes_proton_module_x.push_back(
+          row.external_num_planes_proton_module_x);
+        trackmatch_external_num_planes_proton_module_y.push_back(
+          row.external_num_planes_proton_module_y);
+        trackmatch_external_num_planes_downstream_wagasci_x.push_back(
+          row.external_num_planes_downstream_wagasci_x);
+        trackmatch_external_num_planes_downstream_wagasci_y.push_back(
+          row.external_num_planes_downstream_wagasci_y);
+        trackmatch_external_num_planes_baby_mind_x.push_back(
+          row.external_num_planes_baby_mind_x);
+        trackmatch_external_num_planes_baby_mind_y.push_back(
+          row.external_num_planes_baby_mind_y);
         trackmatch_true_frost_nearest_particle_id.push_back(
           row.true_frost_nearest_particle_id);
         trackmatch_true_frost_nearest_position_x.push_back(

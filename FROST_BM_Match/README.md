@@ -308,6 +308,18 @@ Important added branches:
 - `trackmatch_tangent_x`, `trackmatch_tangent_y`
 - `trackmatch_dtanx`, `trackmatch_dtany`
 - `trackmatch_frost_is_hit`
+- `trackmatch_external_expected_x`, `trackmatch_external_expected_y`
+- `trackmatch_external_tangent_x`, `trackmatch_external_tangent_y`
+- `trackmatch_external_chi2_x`, `trackmatch_external_chi2_y`
+- `trackmatch_external_ndof_x`, `trackmatch_external_ndof_y`
+- `trackmatch_external_num_planes_upstream_wagasci_x`
+- `trackmatch_external_num_planes_upstream_wagasci_y`
+- `trackmatch_external_num_planes_proton_module_x`
+- `trackmatch_external_num_planes_proton_module_y`
+- `trackmatch_external_num_planes_downstream_wagasci_x`
+- `trackmatch_external_num_planes_downstream_wagasci_y`
+- `trackmatch_external_num_planes_baby_mind_x`
+- `trackmatch_external_num_planes_baby_mind_y`
 - beam analysis branches: `spill_pot`, `bunch_pot`, `bsd_spill_number`, `timestamp`, `bsd_good_spill_flag`, `wagasci_good_spill_flag`, `detector_flags`
 - `trackmatch_true_frost_nearest_particle_id`
 - `trackmatch_true_frost_nearest_position_x`
@@ -326,6 +338,15 @@ Definitions used in `match_info`:
   - Data: `is_hit[bunch - 1]`
   - MC: `is_hit[0]`
   - stored in the same row order as the other `trackmatch_*` vectors.
+- `trackmatch_external_expected_x/y`: external-track prediction at the FROST scintillator center, using a line fit in the FROST local coordinate system.
+- `trackmatch_external_tangent_x/y`: external-track fitted tangent, `dx/dz` or `dy/dz`.
+- `trackmatch_external_chi2_x/y`: chi-square of the external-track line fit.
+- `trackmatch_external_ndof_x/y`: number of degrees of freedom of the external-track line fit.
+- `trackmatch_external_num_planes_*_x/y`: number of detector planes used in the external-track fit for each detector and view.
+
+The external-track fit is intended for FROST position-resolution studies. It does not replace the nominal Baby MIND based matching. It uses hits from Upstream WAGASCI, Proton Module, Downstream WAGASCI, and Baby MIND, excluding FROST itself. For Baby MIND, the same plane selection as the existing Baby MIND fit is used: side view, corresponding to y-z, uses the upstream three planes, while top view, corresponding to x-z, uses all Baby MIND planes.
+
+The residual between FROST and the external-track prediction is not stored directly. It should be computed in the analysis from `trackmatch_frost_nearest_x/y` and `trackmatch_external_expected_x/y`.
 - `bsd_good_spill_flag`: copied from the B2 beam summary. In MC this may remain non-initialized and should not be used to infer FHC/RHC.
 - `trackmatch_true_frost_nearest_particle_id`: PDG particle id of the nearest FROST truth particle.
 - `trackmatch_true_frost_nearest_position_x/y`: nearest truth-particle position at `z = 0 mm` in FROST local coordinates.

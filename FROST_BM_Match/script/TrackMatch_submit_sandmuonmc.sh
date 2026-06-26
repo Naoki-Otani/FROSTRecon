@@ -4,7 +4,8 @@ set -eu
 
 # ========= path settings =========
 ROOT_IN_DIR="/group/nu/ninja/work/otani/FROSTReconData/SandmuonMC/5-FROSTRecon"
-ROOT_OUT_DIR="/group/nu/ninja/work/otani/FROSTReconData/SandmuonMC/6-TrackMatch"
+# ROOT_OUT_DIR="/group/nu/ninja/work/otani/FROSTReconData/SandmuonMC/6-TrackMatch"
+ROOT_OUT_DIR="/group/nu/ninja/work/otani/FROSTReconData/SandmuonMC/6-TrackMatch_externalfit"
 OUT_DIR="$ROOT_OUT_DIR/out"
 
 SIF="/home/nu/notani/wagasci_ana_0.2.4.sif"
