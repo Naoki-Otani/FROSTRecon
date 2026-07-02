@@ -1,24 +1,30 @@
-// DrawExternalFrostTruthResidual.C
+// DrawFrostExternalFitDiagnostics.C
 //
 // Usage in ROOT:
 //   MC:
-//     root -l -b -q 'DrawExternalFrostTruthResidual.C("input_dir", "output.pdf", "mc")'
+//     root -l -b -q 'DrawFrostExternalFitDiagnostics.C("input_dir", "output.pdf", "mc")'
 //   data:
-//     root -l -b -q 'DrawExternalFrostTruthResidual.C("input_dir", "output.pdf", "data")'
+//     root -l -b -q 'DrawFrostExternalFitDiagnostics.C("input_dir", "output.pdf", "data")'
 //
 // The macro reads all .root files directly under input_dir, loops over the
-// match_info tree, and saves a multi-page PDF.
+// match_info tree, and saves a multi-page PDF for FROST external-track
+// diagnostics.
+//
+// The median, mean, and sigma_68 values written on the plots and in the
+// summary log are calculated from all selected residual values, including
+// underflow and overflow values outside the displayed histogram range.
 //
 // In MC mode, the output contains:
-//   - x_{ext}-x_{true}
-//   - x_{rec}-x_{ext}
-//   - x_{rec}-x_{true}
-//   - the corresponding y residuals
+//   - x_{ext}-x_{true} and y_{ext}-y_{true}
+//   - x_{rec}-x_{ext} and y_{rec}-y_{ext}
+//   - x_{PM-only}-x_{DWG-only} and y_{PM-only}-y_{DWG-only}
+//   - x_{rec}-x_{true} and y_{rec}-y_{true}
 //   - 2D correlation plots of x_{ext}-x_{true} versus x_{rec}-x_{true}
 //     and y_{ext}-y_{true} versus y_{rec}-y_{true}
 //
 // In data mode, truth information is not available, so only
-// x_{rec}-x_{ext} and y_{rec}-y_{ext} pages are drawn.
+// x_{rec}-x_{ext}, y_{rec}-y_{ext}, and PM-only minus DWG-only split-fit
+// residual pages are drawn.
 //
 // Selection:
 //   common:
@@ -58,8 +64,12 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <fstream>
+#include <iomanip>
 #include <iostream>
+#include <map>
 #include <memory>
+#include <numeric>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -165,6 +175,90 @@ struct CorrelationStats {
     return std::isfinite(correlation);
   }
 };
+
+struct ResidualSummary {
+  bool valid = false;
+  Long64_t n = 0;
+  double mean = 0.;
+  double median = 0.;
+  double sigma68 = 0.;
+  double q16 = 0.;
+  double q84 = 0.;
+};
+
+using ResidualValueMap = std::map<const TH1D*, std::vector<double>>;
+
+double CalculateQuantileFromSortedValues(const std::vector<double> &sorted_values,
+                                         double probability) {
+  if (sorted_values.empty()) {
+    return 0.;
+  }
+
+  if (probability <= 0.) {
+    return sorted_values.front();
+  }
+  if (probability >= 1.) {
+    return sorted_values.back();
+  }
+
+  const double position = probability *
+    static_cast<double>(sorted_values.size() - 1);
+  const std::size_t lower_index = static_cast<std::size_t>(std::floor(position));
+  const std::size_t upper_index = static_cast<std::size_t>(std::ceil(position));
+  const double fraction = position - static_cast<double>(lower_index);
+
+  if (lower_index == upper_index) {
+    return sorted_values.at(lower_index);
+  }
+
+  return sorted_values.at(lower_index) * (1. - fraction) +
+         sorted_values.at(upper_index) * fraction;
+}
+
+ResidualSummary CalculateResidualSummary(const std::vector<double> &values) {
+  ResidualSummary summary;
+  if (values.empty()) {
+    return summary;
+  }
+
+  std::vector<double> sorted_values = values;
+  std::sort(sorted_values.begin(), sorted_values.end());
+
+  summary.n = static_cast<Long64_t>(sorted_values.size());
+  summary.mean = std::accumulate(sorted_values.begin(),
+                                 sorted_values.end(),
+                                 0.0) / static_cast<double>(summary.n);
+  summary.q16 = CalculateQuantileFromSortedValues(sorted_values, 0.16);
+  summary.median = CalculateQuantileFromSortedValues(sorted_values, 0.50);
+  summary.q84 = CalculateQuantileFromSortedValues(sorted_values, 0.84);
+  summary.sigma68 = 0.5 * (summary.q84 - summary.q16);
+  summary.valid = std::isfinite(summary.mean) &&
+                  std::isfinite(summary.median) &&
+                  std::isfinite(summary.sigma68);
+  return summary;
+}
+
+const std::vector<double> &GetResidualValues(
+    const ResidualValueMap &residual_values,
+    const TH1D *hist) {
+  static const std::vector<double> empty_values;
+  const auto it = residual_values.find(hist);
+  if (it == residual_values.end()) {
+    return empty_values;
+  }
+  return it->second;
+}
+
+void FillResidual(TH1D *hist,
+                  ResidualValueMap &residual_values,
+                  double value) {
+  if (!hist || !std::isfinite(value)) {
+    return;
+  }
+
+  hist->Fill(value);
+  residual_values[hist].push_back(value);
+}
 
 bool IsValidValue(double value) {
   return std::isfinite(value) && value > kNonInitializedThreshold;
@@ -291,6 +385,8 @@ void ProcessOneFile(const std::string &file_path,
                     TH1D *hist_y,
                     TH1D *hist_reco_external_x,
                     TH1D *hist_reco_external_y,
+                    TH1D *hist_pm_dwg_split_x,
+                    TH1D *hist_pm_dwg_split_y,
                     TH1D *hist_reco_truth_x,
                     TH1D *hist_reco_truth_y,
                     TH2D *hist_correlation_x,
@@ -299,16 +395,21 @@ void ProcessOneFile(const std::string &file_path,
                     std::vector<TH1D*> &hist_external_truth_y_by_angle,
                     std::vector<TH1D*> &hist_reco_external_x_by_angle,
                     std::vector<TH1D*> &hist_reco_external_y_by_angle,
+                    std::vector<TH1D*> &hist_pm_dwg_split_x_by_angle,
+                    std::vector<TH1D*> &hist_pm_dwg_split_y_by_angle,
                     std::vector<TH1D*> &hist_reco_truth_x_by_angle,
                     std::vector<TH1D*> &hist_reco_truth_y_by_angle,
                     std::vector<TH2D*> &hist_correlation_x_by_angle,
                     std::vector<TH2D*> &hist_correlation_y_by_angle,
+                    ResidualValueMap &residual_values,
                     CorrelationStats &correlation_stats_x,
                     CorrelationStats &correlation_stats_y,
                     std::vector<CorrelationStats> &correlation_stats_x_by_angle,
                     std::vector<CorrelationStats> &correlation_stats_y_by_angle,
                     Long64_t &n_tracks_x,
-                    Long64_t &n_tracks_y) {
+                    Long64_t &n_tracks_y,
+                    Long64_t &n_tracks_pm_dwg_split_x,
+                    Long64_t &n_tracks_pm_dwg_split_y) {
   std::unique_ptr<TFile> file(TFile::Open(file_path.c_str(), "READ"));
   if (!file || file->IsZombie()) {
     std::cerr << "Warning: cannot open file: " << file_path << std::endl;
@@ -329,6 +430,10 @@ void ProcessOneFile(const std::string &file_path,
   std::vector<int> *n_pm_y = nullptr;
   std::vector<double> *external_expected_x = nullptr;
   std::vector<double> *external_expected_y = nullptr;
+  std::vector<double> *pm_only_expected_x = nullptr;
+  std::vector<double> *pm_only_expected_y = nullptr;
+  std::vector<double> *dwg_only_expected_x = nullptr;
+  std::vector<double> *dwg_only_expected_y = nullptr;
   std::vector<double> *frost_nearest_x = nullptr;
   std::vector<double> *frost_nearest_y = nullptr;
   std::vector<double> *true_frost_x = nullptr;
@@ -354,6 +459,14 @@ void ProcessOneFile(const std::string &file_path,
     tree, "trackmatch_external_expected_x", &external_expected_x);
   ok &= SetVectorBranchAddress(
     tree, "trackmatch_external_expected_y", &external_expected_y);
+  ok &= SetVectorBranchAddress(
+    tree, "trackmatch_external_pm_only_expected_x", &pm_only_expected_x);
+  ok &= SetVectorBranchAddress(
+    tree, "trackmatch_external_pm_only_expected_y", &pm_only_expected_y);
+  ok &= SetVectorBranchAddress(
+    tree, "trackmatch_external_dwg_only_expected_x", &dwg_only_expected_x);
+  ok &= SetVectorBranchAddress(
+    tree, "trackmatch_external_dwg_only_expected_y", &dwg_only_expected_y);
   ok &= SetVectorBranchAddress(
     tree, "trackmatch_frost_nearest_x", &frost_nearest_x);
   ok &= SetVectorBranchAddress(
@@ -474,6 +587,27 @@ void ProcessOneFile(const std::string &file_path,
         continue;
       }
 
+      const bool split_x_selected =
+        HasIndex(pm_only_expected_x, itrack) &&
+        HasIndex(dwg_only_expected_x, itrack) &&
+        IsValidValue(pm_only_expected_x->at(itrack)) &&
+        IsValidValue(dwg_only_expected_x->at(itrack));
+
+      if (split_x_selected) {
+        const double pm_minus_dwg_x =
+          pm_only_expected_x->at(itrack) - dwg_only_expected_x->at(itrack);
+        FillResidual(hist_pm_dwg_split_x,
+                     residual_values,
+                     pm_minus_dwg_x);
+        ++n_tracks_pm_dwg_split_x;
+
+        if (has_angle_bin_x) {
+          FillResidual(hist_pm_dwg_split_x_by_angle.at(angle_bin_x),
+                       residual_values,
+                       pm_minus_dwg_x);
+        }
+      }
+
       const bool x_base_selected =
         HasIndex(external_expected_x, itrack) &&
         IsValidValue(external_expected_x->at(itrack));
@@ -481,13 +615,17 @@ void ProcessOneFile(const std::string &file_path,
       if (x_base_selected &&
           HasIndex(frost_nearest_x, itrack) &&
           IsValidValue(frost_nearest_x->at(itrack))) {
-        hist_reco_external_x->Fill(frost_nearest_x->at(itrack) -
-                                   external_expected_x->at(itrack));
+        FillResidual(hist_reco_external_x,
+                     residual_values,
+                     frost_nearest_x->at(itrack) -
+                     external_expected_x->at(itrack));
         ++n_tracks_x;
 
         if (has_angle_bin_x) {
-          hist_reco_external_x_by_angle.at(angle_bin_x)->Fill(
-            frost_nearest_x->at(itrack) - external_expected_x->at(itrack));
+          FillResidual(hist_reco_external_x_by_angle.at(angle_bin_x),
+                       residual_values,
+                       frost_nearest_x->at(itrack) -
+                       external_expected_x->at(itrack));
         }
       }
 
@@ -495,11 +633,15 @@ void ProcessOneFile(const std::string &file_path,
           x_base_selected &&
           HasIndex(true_frost_x, itrack) &&
           IsValidValue(true_frost_x->at(itrack))) {
-        hist_x->Fill(external_expected_x->at(itrack) -
+        FillResidual(hist_x,
+                     residual_values,
+                     external_expected_x->at(itrack) -
                      true_frost_x->at(itrack));
         if (has_angle_bin_x) {
-          hist_external_truth_x_by_angle.at(angle_bin_x)->Fill(
-            external_expected_x->at(itrack) - true_frost_x->at(itrack));
+          FillResidual(hist_external_truth_x_by_angle.at(angle_bin_x),
+                       residual_values,
+                       external_expected_x->at(itrack) -
+                       true_frost_x->at(itrack));
         }
       }
 
@@ -514,16 +656,41 @@ void ProcessOneFile(const std::string &file_path,
         const double reco_minus_true_x =
           frost_nearest_x->at(itrack) - true_frost_x->at(itrack);
 
-        hist_reco_truth_x->Fill(reco_minus_true_x);
+        FillResidual(hist_reco_truth_x,
+                     residual_values,
+                     reco_minus_true_x);
         hist_correlation_x->Fill(external_minus_true_x, reco_minus_true_x);
         correlation_stats_x.Fill(external_minus_true_x, reco_minus_true_x);
 
         if (has_angle_bin_x) {
-          hist_reco_truth_x_by_angle.at(angle_bin_x)->Fill(reco_minus_true_x);
+          FillResidual(hist_reco_truth_x_by_angle.at(angle_bin_x),
+                       residual_values,
+                       reco_minus_true_x);
           hist_correlation_x_by_angle.at(angle_bin_x)->Fill(
             external_minus_true_x, reco_minus_true_x);
           correlation_stats_x_by_angle.at(angle_bin_x).Fill(
             external_minus_true_x, reco_minus_true_x);
+        }
+      }
+
+      const bool split_y_selected =
+        HasIndex(pm_only_expected_y, itrack) &&
+        HasIndex(dwg_only_expected_y, itrack) &&
+        IsValidValue(pm_only_expected_y->at(itrack)) &&
+        IsValidValue(dwg_only_expected_y->at(itrack));
+
+      if (split_y_selected) {
+        const double pm_minus_dwg_y =
+          pm_only_expected_y->at(itrack) - dwg_only_expected_y->at(itrack);
+        FillResidual(hist_pm_dwg_split_y,
+                     residual_values,
+                     pm_minus_dwg_y);
+        ++n_tracks_pm_dwg_split_y;
+
+        if (has_angle_bin_y) {
+          FillResidual(hist_pm_dwg_split_y_by_angle.at(angle_bin_y),
+                       residual_values,
+                       pm_minus_dwg_y);
         }
       }
 
@@ -534,13 +701,17 @@ void ProcessOneFile(const std::string &file_path,
       if (y_base_selected &&
           HasIndex(frost_nearest_y, itrack) &&
           IsValidValue(frost_nearest_y->at(itrack))) {
-        hist_reco_external_y->Fill(frost_nearest_y->at(itrack) -
-                                   external_expected_y->at(itrack));
+        FillResidual(hist_reco_external_y,
+                     residual_values,
+                     frost_nearest_y->at(itrack) -
+                     external_expected_y->at(itrack));
         ++n_tracks_y;
 
         if (has_angle_bin_y) {
-          hist_reco_external_y_by_angle.at(angle_bin_y)->Fill(
-            frost_nearest_y->at(itrack) - external_expected_y->at(itrack));
+          FillResidual(hist_reco_external_y_by_angle.at(angle_bin_y),
+                       residual_values,
+                       frost_nearest_y->at(itrack) -
+                       external_expected_y->at(itrack));
         }
       }
 
@@ -548,12 +719,16 @@ void ProcessOneFile(const std::string &file_path,
           y_base_selected &&
           HasIndex(true_frost_y, itrack) &&
           IsValidValue(true_frost_y->at(itrack))) {
-        hist_y->Fill(external_expected_y->at(itrack) -
+        FillResidual(hist_y,
+                     residual_values,
+                     external_expected_y->at(itrack) -
                      true_frost_y->at(itrack));
 
         if (has_angle_bin_y) {
-          hist_external_truth_y_by_angle.at(angle_bin_y)->Fill(
-            external_expected_y->at(itrack) - true_frost_y->at(itrack));
+          FillResidual(hist_external_truth_y_by_angle.at(angle_bin_y),
+                       residual_values,
+                       external_expected_y->at(itrack) -
+                       true_frost_y->at(itrack));
         }
       }
 
@@ -568,12 +743,16 @@ void ProcessOneFile(const std::string &file_path,
         const double reco_minus_true_y =
           frost_nearest_y->at(itrack) - true_frost_y->at(itrack);
 
-        hist_reco_truth_y->Fill(reco_minus_true_y);
+        FillResidual(hist_reco_truth_y,
+                     residual_values,
+                     reco_minus_true_y);
         hist_correlation_y->Fill(external_minus_true_y, reco_minus_true_y);
         correlation_stats_y.Fill(external_minus_true_y, reco_minus_true_y);
 
         if (has_angle_bin_y) {
-          hist_reco_truth_y_by_angle.at(angle_bin_y)->Fill(reco_minus_true_y);
+          FillResidual(hist_reco_truth_y_by_angle.at(angle_bin_y),
+                       residual_values,
+                       reco_minus_true_y);
           hist_correlation_y_by_angle.at(angle_bin_y)->Fill(
             external_minus_true_y, reco_minus_true_y);
           correlation_stats_y_by_angle.at(angle_bin_y).Fill(
@@ -584,34 +763,9 @@ void ProcessOneFile(const std::string &file_path,
   }
 }
 
-bool CalculateCentral68Width(TH1D *hist,
-                             double &median,
-                             double &sigma68,
-                             double &q16,
-                             double &q84) {
-  if (!hist || hist->GetEntries() <= 0) {
-    return false;
-  }
-
-  double probabilities[3] = {0.16, 0.50, 0.84};
-  double quantiles[3] = {0., 0., 0.};
-  hist->GetQuantiles(3, quantiles, probabilities);
-
-  q16 = quantiles[0];
-  median = quantiles[1];
-  q84 = quantiles[2];
-  sigma68 = 0.5 * (q84 - q16);
-
-  return std::isfinite(sigma68);
-}
-
-void DrawCentral68Text(TH1D *hist) {
-  double median = 0.;
-  double sigma68 = 0.;
-  double q16 = 0.;
-  double q84 = 0.;
-
-  if (!CalculateCentral68Width(hist, median, sigma68, q16, q84)) {
+void DrawCentral68Text(const std::vector<double> &values) {
+  const ResidualSummary summary = CalculateResidualSummary(values);
+  if (!summary.valid) {
     return;
   }
 
@@ -621,12 +775,13 @@ void DrawCentral68Text(TH1D *hist) {
   text->SetBorderSize(0);
   text->SetTextAlign(12);
   text->SetTextSize(0.035);
-  text->AddText(Form("median = %.3f mm", median));
-  text->AddText(Form("#sigma_{68} = %.3f mm", sigma68));
+  text->AddText(Form("median = %.3f mm", summary.median));
+  text->AddText(Form("#sigma_{68} = %.3f mm", summary.sigma68));
   text->Draw("same");
 }
 
-void DrawHistogram(TH1D *hist) {
+void DrawHistogram(TH1D *hist,
+                   const ResidualValueMap &residual_values) {
   gPad->SetLeftMargin(0.17);
   gPad->SetRightMargin(0.05);
   gPad->SetBottomMargin(0.13);
@@ -651,20 +806,21 @@ void DrawHistogram(TH1D *hist) {
     fit->Draw("same");
   }
 
-  DrawCentral68Text(hist);
+  DrawCentral68Text(GetResidualValues(residual_values, hist));
 }
 
 void DrawTwoPanelPage(TCanvas &canvas,
                       TH1D *hist_left,
-                      TH1D *hist_right) {
+                      TH1D *hist_right,
+                      const ResidualValueMap &residual_values) {
   canvas.Clear();
   canvas.Divide(2, 1);
 
   canvas.cd(1);
-  DrawHistogram(hist_left);
+  DrawHistogram(hist_left, residual_values);
 
   canvas.cd(2);
-  DrawHistogram(hist_right);
+  DrawHistogram(hist_right, residual_values);
 }
 
 void DrawCorrelationText(const CorrelationStats &stats) {
@@ -722,6 +878,7 @@ void PrintAnglePages(TCanvas &canvas,
                      const char *output_pdf,
                      const std::vector<TH1D*> &hist_x_by_angle,
                      const std::vector<TH1D*> &hist_y_by_angle,
+                     const ResidualValueMap &residual_values,
                      bool close_pdf = false) {
   TString pdf_close = output_pdf;
   pdf_close += ")";
@@ -729,7 +886,8 @@ void PrintAnglePages(TCanvas &canvas,
   for (int i = 0; i < kNAngleBins; ++i) {
     DrawTwoPanelPage(canvas,
                      hist_x_by_angle.at(i),
-                     hist_y_by_angle.at(i));
+                     hist_y_by_angle.at(i),
+                     residual_values);
 
     if (close_pdf && i == kNAngleBins - 1) {
       canvas.Print(pdf_close);
@@ -765,20 +923,209 @@ void PrintAngleCorrelationPages(
   }
 }
 
+const char *SampleTypeLabel(SampleType sample_type) {
+  return IsMonteCarlo(sample_type) ? "mc" : "data";
+}
+
+TString MakeSummaryLogFileName(const char *output_pdf,
+                               const char *output_log) {
+  if (output_log && std::string(output_log).size() > 0) {
+    return TString(output_log);
+  }
+
+  TString log_file = output_pdf;
+  if (log_file.EndsWith(".pdf")) {
+    log_file.Remove(log_file.Length() - 4);
+  }
+  log_file += ".log";
+  return log_file;
+}
+
+void WriteResidualSummaryRow(std::ostream &out,
+                             SampleType sample_type,
+                             const char *quantity_name,
+                             const char *angle_bin_label,
+                             const std::vector<double> &values) {
+  const ResidualSummary summary = CalculateResidualSummary(values);
+
+  out << SampleTypeLabel(sample_type) << ','
+      << quantity_name << ','
+      << angle_bin_label << ',';
+
+  if (!summary.valid) {
+    out << 0 << ",,,,," << '\n';
+    return;
+  }
+
+  out << summary.n << ','
+      << std::setprecision(10) << summary.mean << ','
+      << summary.median << ','
+      << summary.sigma68 << ','
+      << summary.q16 << ','
+      << summary.q84 << '\n';
+}
+
+void WriteResidualSummaryRowsForAngles(
+    std::ostream &out,
+    SampleType sample_type,
+    const char *quantity_name,
+    const char *theta_label,
+    const std::vector<TH1D*> &hist_by_angle,
+    const ResidualValueMap &residual_values) {
+  for (int i = 0; i < kNAngleBins; ++i) {
+    const TString angle_bin_label =
+      Form("theta_%s_%.0f_%.0f_deg",
+           theta_label,
+           kAngleBins[i],
+           kAngleBins[i + 1]);
+    WriteResidualSummaryRow(out,
+                            sample_type,
+                            quantity_name,
+                            angle_bin_label.Data(),
+                            GetResidualValues(residual_values,
+                                              hist_by_angle.at(i)));
+  }
+}
+
+void WriteResidualSummaryLog(
+    const char *output_log,
+    SampleType sample_type,
+    const ResidualValueMap &residual_values,
+    TH1D *hist_external_truth_x,
+    TH1D *hist_external_truth_y,
+    TH1D *hist_reco_external_x,
+    TH1D *hist_reco_external_y,
+    TH1D *hist_pm_dwg_split_x,
+    TH1D *hist_pm_dwg_split_y,
+    TH1D *hist_reco_truth_x,
+    TH1D *hist_reco_truth_y,
+    const std::vector<TH1D*> &hist_external_truth_x_by_angle,
+    const std::vector<TH1D*> &hist_external_truth_y_by_angle,
+    const std::vector<TH1D*> &hist_reco_external_x_by_angle,
+    const std::vector<TH1D*> &hist_reco_external_y_by_angle,
+    const std::vector<TH1D*> &hist_pm_dwg_split_x_by_angle,
+    const std::vector<TH1D*> &hist_pm_dwg_split_y_by_angle,
+    const std::vector<TH1D*> &hist_reco_truth_x_by_angle,
+    const std::vector<TH1D*> &hist_reco_truth_y_by_angle) {
+  std::ofstream log(output_log);
+  if (!log) {
+    std::cerr << "Warning: cannot open summary log file: "
+              << output_log << std::endl;
+    return;
+  }
+
+  log << "sample_type,quantity,angle_bin,n,mean_mm,median_mm,"
+      << "sigma68_mm,q16_mm,q84_mm" << '\n';
+
+  if (IsMonteCarlo(sample_type)) {
+    WriteResidualSummaryRow(log, sample_type, "x_ext_minus_x_true", "all",
+                            GetResidualValues(residual_values,
+                                              hist_external_truth_x));
+    WriteResidualSummaryRow(log, sample_type, "y_ext_minus_y_true", "all",
+                            GetResidualValues(residual_values,
+                                              hist_external_truth_y));
+  }
+
+  WriteResidualSummaryRow(log, sample_type, "x_rec_minus_x_ext", "all",
+                          GetResidualValues(residual_values,
+                                            hist_reco_external_x));
+  WriteResidualSummaryRow(log, sample_type, "y_rec_minus_y_ext", "all",
+                          GetResidualValues(residual_values,
+                                            hist_reco_external_y));
+
+  WriteResidualSummaryRow(log,
+                          sample_type,
+                          "x_pm_only_minus_x_dwg_only",
+                          "all",
+                          GetResidualValues(residual_values,
+                                            hist_pm_dwg_split_x));
+  WriteResidualSummaryRow(log,
+                          sample_type,
+                          "y_pm_only_minus_y_dwg_only",
+                          "all",
+                          GetResidualValues(residual_values,
+                                            hist_pm_dwg_split_y));
+
+  if (IsMonteCarlo(sample_type)) {
+    WriteResidualSummaryRow(log, sample_type, "x_rec_minus_x_true", "all",
+                            GetResidualValues(residual_values,
+                                              hist_reco_truth_x));
+    WriteResidualSummaryRow(log, sample_type, "y_rec_minus_y_true", "all",
+                            GetResidualValues(residual_values,
+                                              hist_reco_truth_y));
+
+    WriteResidualSummaryRowsForAngles(log,
+                                      sample_type,
+                                      "x_ext_minus_x_true",
+                                      "x",
+                                      hist_external_truth_x_by_angle,
+                                      residual_values);
+    WriteResidualSummaryRowsForAngles(log,
+                                      sample_type,
+                                      "y_ext_minus_y_true",
+                                      "y",
+                                      hist_external_truth_y_by_angle,
+                                      residual_values);
+  }
+
+  WriteResidualSummaryRowsForAngles(log,
+                                    sample_type,
+                                    "x_rec_minus_x_ext",
+                                    "x",
+                                    hist_reco_external_x_by_angle,
+                                    residual_values);
+  WriteResidualSummaryRowsForAngles(log,
+                                    sample_type,
+                                    "y_rec_minus_y_ext",
+                                    "y",
+                                    hist_reco_external_y_by_angle,
+                                    residual_values);
+
+  WriteResidualSummaryRowsForAngles(log,
+                                    sample_type,
+                                    "x_pm_only_minus_x_dwg_only",
+                                    "x",
+                                    hist_pm_dwg_split_x_by_angle,
+                                    residual_values);
+  WriteResidualSummaryRowsForAngles(log,
+                                    sample_type,
+                                    "y_pm_only_minus_y_dwg_only",
+                                    "y",
+                                    hist_pm_dwg_split_y_by_angle,
+                                    residual_values);
+
+  if (IsMonteCarlo(sample_type)) {
+    WriteResidualSummaryRowsForAngles(log,
+                                      sample_type,
+                                      "x_rec_minus_x_true",
+                                      "x",
+                                      hist_reco_truth_x_by_angle,
+                                      residual_values);
+    WriteResidualSummaryRowsForAngles(log,
+                                      sample_type,
+                                      "y_rec_minus_y_true",
+                                      "y",
+                                      hist_reco_truth_y_by_angle,
+                                      residual_values);
+  }
+}
+
 }  // namespace
 
-void DrawExternalFrostTruthResidual(const char *input_dir="/group/nu/ninja/work/otani/FROSTReconData/Artificial_sandmuonMC/6-TrackMatch_externalfit_PMandDWG",
-                                    const char *output_pdf="/group/nu/ninja/work/otani/FROSTReconData/Artificial_sandmuonMC/6-TrackMatch_externalfit_PMandDWG/residual_external_true.pdf",
-                                    const char *sample_type_arg="mc",
-                                    int nbins = 200,
-                                    double xmin_mm = -50.,
-                                    double xmax_mm = 50.) {
-// void DrawExternalFrostTruthResidual(const char *input_dir="/group/nu/ninja/work/otani/FROSTReconData/BM_FROST_BMWGPM/2-rootfile_after_TrackMatch_externalfit_PMandDWG",
-//                                     const char *output_pdf="/group/nu/ninja/work/otani/FROSTReconData/BM_FROST_BMWGPM/2-rootfile_after_TrackMatch_externalfit_PMandDWG/residual_rec_external.pdf",
-//                                     const char *sample_type_arg="data",
+// void DrawExternalFrostTruthResidual(const char *input_dir="/group/nu/ninja/work/otani/FROSTReconData/Artificial_sandmuonMC/6-TrackMatch_externalfit_PMandDWG",
+//                                     const char *output_pdf="/group/nu/ninja/work/otani/FROSTReconData/Artificial_sandmuonMC/6-TrackMatch_externalfit_PMandDWG/external_fit_diagnostics.pdf",
+//                                     const char *sample_type_arg="mc",
 //                                     int nbins = 200,
 //                                     double xmin_mm = -50.,
-//                                     double xmax_mm = 50.) {
+//                                     double xmax_mm = 50.,
+//                                     const char *output_log="") {
+void DrawExternalFrostTruthResidual(const char *input_dir="/group/nu/ninja/work/otani/FROSTReconData/BM_FROST_BMWGPM/2-rootfile_after_TrackMatch_externalfit_PMandDWG",
+                                    const char *output_pdf="/group/nu/ninja/work/otani/FROSTReconData/BM_FROST_BMWGPM/2-rootfile_after_TrackMatch_externalfit_PMandDWG/external_fit_diagnostics.pdf",
+                                    const char *sample_type_arg="data",
+                                    int nbins = 200,
+                                    double xmin_mm = -50.,
+                                    double xmax_mm = 50.,
+                                    const char *output_log="") {
   gStyle->SetOptStat(1110);
   gStyle->SetOptFit(1111);
 
@@ -818,6 +1165,20 @@ void DrawExternalFrostTruthResidual(const char *input_dir="/group/nu/ninja/work/
     nbins,
     xmin_mm,
     xmax_mm);
+
+  auto *hist_pm_dwg_split_x = new TH1D(
+    "hist_pm_dwg_split_residual_x",
+    "All angles;x_{PM-only}-x_{DWG-only} [mm];Number of tracks",
+    nbins,
+    2*xmin_mm,
+    2*xmax_mm);
+
+  auto *hist_pm_dwg_split_y = new TH1D(
+    "hist_pm_dwg_split_residual_y",
+    "All angles;y_{PM-only}-y_{DWG-only} [mm];Number of tracks",
+    nbins,
+    2*xmin_mm,
+    2*xmax_mm);
 
   auto *hist_reco_truth_x = new TH1D(
     "hist_reco_truth_residual_x",
@@ -903,6 +1264,22 @@ void DrawExternalFrostTruthResidual(const char *input_dir="/group/nu/ninja/work/
     xmin_mm,
     xmax_mm);
 
+  auto hist_pm_dwg_split_x_by_angle = MakeAngleHistograms(
+    "hist_pm_dwg_split_residual_x",
+    "x",
+    "x_{PM-only}-x_{DWG-only} [mm]",
+    nbins,
+    2*xmin_mm,
+    2*xmax_mm);
+
+  auto hist_pm_dwg_split_y_by_angle = MakeAngleHistograms(
+    "hist_pm_dwg_split_residual_y",
+    "y",
+    "y_{PM-only}-y_{DWG-only} [mm]",
+    nbins,
+    2*xmin_mm,
+    2*xmax_mm);
+
   auto hist_reco_truth_x_by_angle = MakeAngleHistograms(
     "hist_reco_truth_residual_x",
     "x",
@@ -919,6 +1296,8 @@ void DrawExternalFrostTruthResidual(const char *input_dir="/group/nu/ninja/work/
     xmin_mm,
     xmax_mm);
 
+  ResidualValueMap residual_values;
+
   CorrelationStats correlation_stats_x;
   CorrelationStats correlation_stats_y;
   std::vector<CorrelationStats> correlation_stats_x_by_angle(kNAngleBins);
@@ -926,6 +1305,8 @@ void DrawExternalFrostTruthResidual(const char *input_dir="/group/nu/ninja/work/
 
   Long64_t n_tracks_x = 0;
   Long64_t n_tracks_y = 0;
+  Long64_t n_tracks_pm_dwg_split_x = 0;
+  Long64_t n_tracks_pm_dwg_split_y = 0;
 
   for (const auto &file_path : root_files) {
     std::cout << "Processing: " << file_path << std::endl;
@@ -935,6 +1316,8 @@ void DrawExternalFrostTruthResidual(const char *input_dir="/group/nu/ninja/work/
                    hist_y,
                    hist_reco_external_x,
                    hist_reco_external_y,
+                   hist_pm_dwg_split_x,
+                   hist_pm_dwg_split_y,
                    hist_reco_truth_x,
                    hist_reco_truth_y,
                    hist_correlation_x,
@@ -943,20 +1326,29 @@ void DrawExternalFrostTruthResidual(const char *input_dir="/group/nu/ninja/work/
                    hist_external_truth_y_by_angle,
                    hist_reco_external_x_by_angle,
                    hist_reco_external_y_by_angle,
+                   hist_pm_dwg_split_x_by_angle,
+                   hist_pm_dwg_split_y_by_angle,
                    hist_reco_truth_x_by_angle,
                    hist_reco_truth_y_by_angle,
                    hist_correlation_x_by_angle,
                    hist_correlation_y_by_angle,
+                   residual_values,
                    correlation_stats_x,
                    correlation_stats_y,
                    correlation_stats_x_by_angle,
                    correlation_stats_y_by_angle,
                    n_tracks_x,
-                   n_tracks_y);
+                   n_tracks_y,
+                   n_tracks_pm_dwg_split_x,
+                   n_tracks_pm_dwg_split_y);
   }
 
   std::cout << "Selected tracks for x: " << n_tracks_x << std::endl;
   std::cout << "Selected tracks for y: " << n_tracks_y << std::endl;
+  std::cout << "Selected tracks for PM-only minus DWG-only x: "
+            << n_tracks_pm_dwg_split_x << std::endl;
+  std::cout << "Selected tracks for PM-only minus DWG-only y: "
+            << n_tracks_pm_dwg_split_y << std::endl;
 
   if (IsMonteCarlo(sample_type)) {
     double mean_e = 0.;
@@ -1001,36 +1393,71 @@ void DrawExternalFrostTruthResidual(const char *input_dir="/group/nu/ninja/work/
     }
   }
 
-  TCanvas canvas("canvas", "External track residuals", 1200, 600);
+  const TString output_log_file = MakeSummaryLogFileName(output_pdf, output_log);
+  WriteResidualSummaryLog(output_log_file.Data(),
+                          sample_type,
+                          residual_values,
+                          hist_x,
+                          hist_y,
+                          hist_reco_external_x,
+                          hist_reco_external_y,
+                          hist_pm_dwg_split_x,
+                          hist_pm_dwg_split_y,
+                          hist_reco_truth_x,
+                          hist_reco_truth_y,
+                          hist_external_truth_x_by_angle,
+                          hist_external_truth_y_by_angle,
+                          hist_reco_external_x_by_angle,
+                          hist_reco_external_y_by_angle,
+                          hist_pm_dwg_split_x_by_angle,
+                          hist_pm_dwg_split_y_by_angle,
+                          hist_reco_truth_x_by_angle,
+                          hist_reco_truth_y_by_angle);
+  std::cout << "Wrote residual summary log: "
+            << output_log_file.Data() << std::endl;
+
+  TCanvas canvas("canvas", "FROST external-fit diagnostics", 1200, 600);
   TString pdf_open = output_pdf;
   pdf_open += "(";
   TString pdf_close = output_pdf;
   pdf_close += ")";
 
   if (IsMonteCarlo(sample_type)) {
-    DrawTwoPanelPage(canvas, hist_x, hist_y);
+    DrawTwoPanelPage(canvas, hist_x, hist_y, residual_values);
     canvas.Print(pdf_open);
 
-    DrawTwoPanelPage(canvas, hist_reco_external_x, hist_reco_external_y);
+    DrawTwoPanelPage(canvas, hist_reco_external_x, hist_reco_external_y, residual_values);
     canvas.Print(output_pdf);
 
-    DrawTwoPanelPage(canvas, hist_reco_truth_x, hist_reco_truth_y);
+    DrawTwoPanelPage(canvas, hist_pm_dwg_split_x, hist_pm_dwg_split_y, residual_values);
+    canvas.Print(output_pdf);
+
+    DrawTwoPanelPage(canvas, hist_reco_truth_x, hist_reco_truth_y, residual_values);
     canvas.Print(output_pdf);
 
     PrintAnglePages(canvas,
                     output_pdf,
                     hist_external_truth_x_by_angle,
-                    hist_external_truth_y_by_angle);
+                    hist_external_truth_y_by_angle,
+                    residual_values);
 
     PrintAnglePages(canvas,
                     output_pdf,
                     hist_reco_external_x_by_angle,
-                    hist_reco_external_y_by_angle);
+                    hist_reco_external_y_by_angle,
+                    residual_values);
+
+    PrintAnglePages(canvas,
+                    output_pdf,
+                    hist_pm_dwg_split_x_by_angle,
+                    hist_pm_dwg_split_y_by_angle,
+                    residual_values);
 
     PrintAnglePages(canvas,
                     output_pdf,
                     hist_reco_truth_x_by_angle,
-                    hist_reco_truth_y_by_angle);
+                    hist_reco_truth_y_by_angle,
+                    residual_values);
 
     DrawCorrelationTwoPanelPage(canvas,
                                 hist_correlation_x,
@@ -1047,13 +1474,23 @@ void DrawExternalFrostTruthResidual(const char *input_dir="/group/nu/ninja/work/
                                correlation_stats_y_by_angle,
                                true);
   } else {
-    DrawTwoPanelPage(canvas, hist_reco_external_x, hist_reco_external_y);
+    DrawTwoPanelPage(canvas, hist_reco_external_x, hist_reco_external_y, residual_values);
     canvas.Print(pdf_open);
+
+    DrawTwoPanelPage(canvas, hist_pm_dwg_split_x, hist_pm_dwg_split_y, residual_values);
+    canvas.Print(output_pdf);
 
     PrintAnglePages(canvas,
                     output_pdf,
                     hist_reco_external_x_by_angle,
                     hist_reco_external_y_by_angle,
+                    residual_values);
+
+    PrintAnglePages(canvas,
+                    output_pdf,
+                    hist_pm_dwg_split_x_by_angle,
+                    hist_pm_dwg_split_y_by_angle,
+                    residual_values,
                     true);
   }
 }

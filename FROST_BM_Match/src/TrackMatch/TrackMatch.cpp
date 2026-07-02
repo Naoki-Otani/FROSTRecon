@@ -83,6 +83,10 @@ void PrintUsage(const char *program_name) {
     << " <z shift>"
     << " <MC(0)/data(1)>"
     << " [fhc|rhc]"
+    << " [--pm-shift-x mm]"
+    << " [--pm-shift-y mm]"
+    << " [--dwg-shift-x mm]"
+    << " [--dwg-shift-y mm]"
     << " [trace|debug|info|warning|error|fatal]"
     << std::endl
     << std::endl
@@ -90,6 +94,13 @@ void PrintUsage(const char *program_name) {
     << "  Data:" << std::endl
     << "    " << program_name
     << " afterHitConverter.root afterTrackMatch.root 0.0 1 info"
+    << std::endl
+    << std::endl
+    << "  Data with external-fit position shifts:" << std::endl
+    << "    " << program_name
+    << " afterHitConverter.root afterTrackMatch.root 0.0 1"
+    << " --pm-shift-x 8.094 --pm-shift-y 0.0"
+    << " --dwg-shift-x 0.0 --dwg-shift-y 0.0 info"
     << std::endl
     << std::endl
     << "  MC FHC:" << std::endl
@@ -106,6 +117,11 @@ void PrintUsage(const char *program_name) {
     << "  - Use 0 for MC and 1 for real data." << std::endl
     << "  - For MC input, fhc or rhc is required explicitly." << std::endl
     << "  - For real data, fhc/rhc is ignored and BsdGoodSpillFlag is used."
+    << std::endl
+    << "  - External-fit position shifts are applied only to real data."
+    << std::endl
+    << "  - Positive x/y shifts move PM or downstream WAGASCI hit positions"
+    << " in the positive FROST-local x/y direction."
     << std::endl;
 }
 
@@ -125,6 +141,31 @@ BeamMode ParseBeamMode(std::string mode) {
 
   throw std::invalid_argument(
       "Unknown beam mode: " + mode + " (use fhc/rhc)");
+}
+
+bool IsExternalFitShiftOption(const std::string &option) {
+  return option == "--pm-shift-x" ||
+         option == "--pm-shift-y" ||
+         option == "--dwg-shift-x" ||
+         option == "--dwg-shift-y";
+}
+
+double ParseDoubleOption(const std::string &option,
+                         const std::string &value) {
+  try {
+    std::size_t processed = 0;
+    const double parsed = std::stod(value, &processed);
+    if (processed != value.size()) {
+      throw std::invalid_argument("trailing characters");
+    }
+    return parsed;
+  } catch (const std::invalid_argument &) {
+    throw std::invalid_argument(
+      "Invalid value for " + option + ": " + value);
+  } catch (const std::out_of_range &) {
+    throw std::out_of_range(
+      "Out-of-range value for " + option + ": " + value);
+  }
 }
 
 int BeamModeToBsdGoodSpillFlag(BeamMode beam_mode) {
@@ -258,6 +299,13 @@ enum class ExternalFitDetectorSelection {
   kProtonModuleAndDownstreamWagasci,
   kProtonModuleOnly,
   kDownstreamWagasciOnly
+};
+
+struct ExternalFitPositionShift {
+  double proton_module_x = 0.;
+  double proton_module_y = 0.;
+  double downstream_wagasci_x = 0.;
+  double downstream_wagasci_y = 0.;
 };
 
 struct TrueFrostParticleInfo {
@@ -1009,6 +1057,46 @@ bool UseHitForExternalTrackFit(
   return true;
 }
 
+double GetExternalFitPositionShift(
+    int detector_id,
+    int view,
+    int datatype,
+    const ExternalFitPositionShift &position_shift) {
+  // The alignment shifts are intended to tune real data to MC.
+  // Do not modify MC hit positions.
+  if (datatype != B2DataType::kRealData) {
+    return 0.;
+  }
+
+  if (detector_id == B2Detector::kProtonModule) {
+    if (view == B2View::kTopView) {
+      return position_shift.proton_module_x;
+    }
+    if (view == B2View::kSideView) {
+      return position_shift.proton_module_y;
+    }
+  }
+
+  if (detector_id == B2Detector::kWagasciDownstream) {
+    if (view == B2View::kTopView) {
+      return position_shift.downstream_wagasci_x;
+    }
+    if (view == B2View::kSideView) {
+      return position_shift.downstream_wagasci_y;
+    }
+  }
+
+  return 0.;
+}
+
+bool HasNonZeroExternalFitPositionShift(
+    const ExternalFitPositionShift &position_shift) {
+  return position_shift.proton_module_x != 0. ||
+         position_shift.proton_module_y != 0. ||
+         position_shift.downstream_wagasci_x != 0. ||
+         position_shift.downstream_wagasci_y != 0.;
+}
+
 double UniformSigmaFromInterval(double min_value, double max_value) {
   const double width = max_value - min_value;
   if (width <= 0.) {
@@ -1055,7 +1143,8 @@ std::vector<ExternalFitRawHit> CollectExternalFitRawHits(
     const B2TrackSummary *track,
     int datatype,
     B2Dimension &dimension,
-    ExternalFitDetectorSelection detector_selection) {
+    ExternalFitDetectorSelection detector_selection,
+    const ExternalFitPositionShift &position_shift) {
   std::vector<ExternalFitRawHit> raw_hits;
 
   auto it_cluster = track->BeginCluster();
@@ -1118,11 +1207,15 @@ std::vector<ExternalFitRawHit> CollectExternalFitRawHits(
       // width / sqrt(12) after hits are merged into one fit point.
       raw_hit.z_error = std::fabs(local_error.Z());
 
+      const double external_position_shift =
+        GetExternalFitPositionShift(
+          detector_id, view, datatype, position_shift);
+
       if (view == B2View::kTopView) {
-        raw_hit.position = frost_position.X();
+        raw_hit.position = frost_position.X() + external_position_shift;
         raw_hit.position_error = std::fabs(local_error.X());
       } else if (view == B2View::kSideView) {
-        raw_hit.position = frost_position.Y();
+        raw_hit.position = frost_position.Y() + external_position_shift;
         raw_hit.position_error = std::fabs(local_error.Y());
       }
 
@@ -1258,11 +1351,13 @@ ExternalTrackFitResult FitExternalTrackToFrost(
     const B2TrackSummary *track,
     int datatype,
     B2Dimension &dimension,
-    ExternalFitDetectorSelection detector_selection) {
+    ExternalFitDetectorSelection detector_selection,
+    const ExternalFitPositionShift &position_shift) {
   ExternalTrackFitResult result;
 
   const std::vector<ExternalFitRawHit> raw_hits =
-    CollectExternalFitRawHits(track, datatype, dimension, detector_selection);
+    CollectExternalFitRawHits(
+      track, datatype, dimension, detector_selection, position_shift);
   const std::vector<ExternalFitPoint> fit_points =
     BuildExternalFitPoints(raw_hits);
 
@@ -1622,6 +1717,7 @@ void TransferBabyMindTrackInfo(const B2SpillSummary &spill_summary,
 			       int datatype,
 			       B2Dimension &dimension,
 			       BeamMode mc_beam_mode,
+			       const ExternalFitPositionShift &external_fit_position_shift,
 			       std::vector<ExternalTrackFitSet> *external_fit_results) {
 
   int itrack = 0;
@@ -1768,17 +1864,20 @@ void TransferBabyMindTrackInfo(const B2SpillSummary &spill_summary,
           track,
           datatype,
           dimension,
-          ExternalFitDetectorSelection::kProtonModuleAndDownstreamWagasci);
+          ExternalFitDetectorSelection::kProtonModuleAndDownstreamWagasci,
+          external_fit_position_shift);
         external_fit_set.proton_module_only = FitExternalTrackToFrost(
           track,
           datatype,
           dimension,
-          ExternalFitDetectorSelection::kProtonModuleOnly);
+          ExternalFitDetectorSelection::kProtonModuleOnly,
+          external_fit_position_shift);
         external_fit_set.downstream_wagasci_only = FitExternalTrackToFrost(
           track,
           datatype,
           dimension,
-          ExternalFitDetectorSelection::kDownstreamWagasciOnly);
+          ExternalFitDetectorSelection::kDownstreamWagasciOnly,
+          external_fit_position_shift);
         external_fit_results->push_back(external_fit_set);
       }
 
@@ -1819,7 +1918,7 @@ int main(int argc, char *argv[]) {
 
   BOOST_LOG_TRIVIAL(info) << "==========FROST-Baby MIND Track Matching Start==========";
 
-  if (argc < 5 || argc > 7) {
+  if (argc < 5) {
     PrintUsage(argv[0]);
     std::exit(1);
   }
@@ -1828,6 +1927,7 @@ int main(int argc, char *argv[]) {
     double z_shift = std::stof(argv[3]);
     int datatype = std::stoi(argv[4]);
     BeamMode mc_beam_mode = BeamMode::kAuto;
+    ExternalFitPositionShift external_fit_position_shift;
 
     if (datatype != B2DataType::kMonteCarlo && datatype != B2DataType::kRealData) {
       throw std::invalid_argument("Invalid data type. Use 0 for MC and 1 for data.");
@@ -1835,7 +1935,25 @@ int main(int argc, char *argv[]) {
 
     for (int iarg = 5; iarg < argc; ++iarg) {
       const std::string token = argv[iarg];
-      if (IsBeamModeToken(token)) {
+      if (IsExternalFitShiftOption(token)) {
+        if (iarg + 1 >= argc) {
+          throw std::invalid_argument(
+            "Missing value after option " + token);
+        }
+
+        const std::string value = argv[++iarg];
+        const double shift = ParseDoubleOption(token, value);
+
+        if (token == "--pm-shift-x") {
+          external_fit_position_shift.proton_module_x = shift;
+        } else if (token == "--pm-shift-y") {
+          external_fit_position_shift.proton_module_y = shift;
+        } else if (token == "--dwg-shift-x") {
+          external_fit_position_shift.downstream_wagasci_x = shift;
+        } else if (token == "--dwg-shift-y") {
+          external_fit_position_shift.downstream_wagasci_y = shift;
+        }
+      } else if (IsBeamModeToken(token)) {
         if (mc_beam_mode != BeamMode::kAuto) {
           throw std::invalid_argument("Beam mode was specified more than once");
         }
@@ -1857,6 +1975,21 @@ int main(int argc, char *argv[]) {
       BOOST_LOG_TRIVIAL(warning)
         << "Beam mode argument is ignored for real data. "
         << "BsdGoodSpillFlag from B2BeamSummary is used instead.";
+    }
+
+    if (datatype == B2DataType::kRealData) {
+      BOOST_LOG_TRIVIAL(info)
+        << "External-fit data position shifts [mm]"
+        << " : PM x=" << external_fit_position_shift.proton_module_x
+        << ", PM y=" << external_fit_position_shift.proton_module_y
+        << ", DWG x=" << external_fit_position_shift.downstream_wagasci_x
+        << ", DWG y=" << external_fit_position_shift.downstream_wagasci_y;
+    } else if (HasNonZeroExternalFitPositionShift(
+                 external_fit_position_shift)) {
+      BOOST_LOG_TRIVIAL(warning)
+        << "External-fit position shift options were provided for MC, "
+        << "but shifts are applied only to real data. MC hit positions "
+        << "will not be shifted.";
     }
 
     logging::core::get()->set_filter(
@@ -2001,7 +2134,13 @@ int main(int argc, char *argv[]) {
         std::vector<ExternalTrackFitSet> external_fit_results;
 
 	      TransferBabyMindTrackInfo(
-          input_spill_summary, my_ntbm, datatype, dimension_, mc_beam_mode, &external_fit_results);
+          input_spill_summary,
+          my_ntbm,
+          datatype,
+          dimension_,
+          mc_beam_mode,
+          external_fit_position_shift,
+          &external_fit_results);
 
         std::vector<TrackMatchRow> rows;
 
