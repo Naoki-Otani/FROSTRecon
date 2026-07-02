@@ -1,29 +1,24 @@
 // DrawExternalFrostTruthResidual.C
 //
 // Usage in ROOT:
-//   root -l -b -q 'DrawExternalFrostTruthResidual.C("input_dir", "output.pdf")'
+//   MC:
+//     root -l -b -q 'DrawExternalFrostTruthResidual.C("input_dir", "output.pdf", "mc")'
+//   data:
+//     root -l -b -q 'DrawExternalFrostTruthResidual.C("input_dir", "output.pdf", "data")'
 //
 // The macro reads all .root files directly under input_dir, loops over the
 // match_info tree, and saves a multi-page PDF.
 //
-// Residual pages:
-//   1. all angles: external expected - true FROST
-//   2. all angles: FROST reco - external expected
-//   3. all angles: FROST reco - true FROST
-//   4-11. angle-binned external expected - true FROST
-//   12-19. angle-binned FROST reco - external expected
-//   20-27. angle-binned FROST reco - true FROST
+// In MC mode, the output contains:
+//   - x_{ext}-x_{true}
+//   - x_{rec}-x_{ext}
+//   - x_{rec}-x_{true}
+//   - the corresponding y residuals
+//   - 2D correlation plots of x_{ext}-x_{true} versus x_{rec}-x_{true}
+//     and y_{ext}-y_{true} versus y_{rec}-y_{true}
 //
-// Correlation pages for MC:
-//   28. all angles:
-//       horizontal: external expected - true FROST
-//       vertical:   FROST reco - true FROST
-//   29-36. same correlation plots in angle bins.
-//
-// The correlation pages display the ordinary RMS-based covariance and Pearson
-// correlation coefficient between
-//   E = external expected - true FROST
-//   R = FROST reco - true FROST.
+// In data mode, truth information is not available, so only
+// x_{rec}-x_{ext} and y_{rec}-y_{ext} pages are drawn.
 //
 // Selection:
 //   common:
@@ -31,12 +26,18 @@
 //      trackmatch_ninja_track_type == 1
 //      abs(frost_nearest_x) < ACCEPTANCE_X mm
 //      abs(frost_nearest_y) < ACCEPTANCE_Y mm
-//      trackmatch_external_num_planes_downstream_wagasci_x > NHIT_DWG_X
-//      trackmatch_external_num_planes_proton_module_x > NHIT_PM_X
-//      trackmatch_external_num_planes_downstream_wagasci_y > NHIT_DWG_Y
-//      trackmatch_external_num_planes_proton_module_y > NHIT_PM_Y
+//      trackmatch_external_num_planes_downstream_wagasci_x >= NHIT_DWG_X
+//      trackmatch_external_num_planes_proton_module_x >= NHIT_PM_X
+//      trackmatch_external_num_planes_downstream_wagasci_y >= NHIT_DWG_Y
+//      trackmatch_external_num_planes_proton_module_y >= NHIT_PM_Y
 //
-//   The same common selection is applied to both x and y residuals.
+//   data only:
+//      bsd_good_spill_flag != 0
+//      detector_flags[0] == 1  // Proton Module detector flag
+//      detector_flags[2] == 1  // downstream WAGASCI detector flag
+//
+// Angle-binned x plots use theta_x = atan(|tan_x|).
+// Angle-binned y plots use theta_y = atan(|tan_y|).
 
 #include <TCanvas.h>
 #include <TFile.h>
@@ -51,12 +52,15 @@
 #include <TF1.h>
 #include <TPaveText.h>
 #include <TMath.h>
+#include <TPad.h>
 #include <TTree.h>
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <iostream>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -80,6 +84,39 @@ const double kAngleBins[kNAngleBins + 1] = {
   0.0, 5.0, 10.0, 15.0, 20.0,
   25.0, 30.0, 35.0, 40.0
 };
+
+enum class SampleType {
+  kMonteCarlo,
+  kData
+};
+
+SampleType ParseSampleType(const char *sample_type_arg) {
+  std::string sample_type = sample_type_arg ? sample_type_arg : "mc";
+  std::transform(sample_type.begin(), sample_type.end(), sample_type.begin(),
+                 [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+
+  if (sample_type == "mc" ||
+      sample_type == "montecarlo" ||
+      sample_type == "monte_carlo") {
+    return SampleType::kMonteCarlo;
+  }
+  if (sample_type == "data" ||
+      sample_type == "realdata" ||
+      sample_type == "real_data") {
+    return SampleType::kData;
+  }
+
+  throw std::invalid_argument(
+    "Unknown sample type: " + sample_type + " (use mc or data)");
+}
+
+bool IsMonteCarlo(SampleType sample_type) {
+  return sample_type == SampleType::kMonteCarlo;
+}
+
+bool IsData(SampleType sample_type) {
+  return sample_type == SampleType::kData;
+}
 
 struct CorrelationStats {
   Long64_t n = 0;
@@ -200,7 +237,7 @@ int FindAngleBin(double angle_deg) {
 }
 
 std::vector<TH1D*> MakeAngleHistograms(const char *name_prefix,
-                                       const char *title_prefix,
+                                       const char *theta_label,
                                        const char *x_axis_title,
                                        int nbins,
                                        double xmin_mm,
@@ -211,8 +248,8 @@ std::vector<TH1D*> MakeAngleHistograms(const char *name_prefix,
   for (int i = 0; i < kNAngleBins; ++i) {
     histograms.push_back(new TH1D(
       Form("%s_angle_%02d", name_prefix, i),
-      Form("%s: %.0f #leq #theta < %.0f deg;%s;Number of tracks",
-           title_prefix, kAngleBins[i], kAngleBins[i + 1], x_axis_title),
+      Form("%.0f #leq #theta_{%s} < %.0f deg;%s;Number of tracks",
+           kAngleBins[i], theta_label, kAngleBins[i + 1], x_axis_title),
       nbins,
       xmin_mm,
       xmax_mm));
@@ -222,7 +259,9 @@ std::vector<TH1D*> MakeAngleHistograms(const char *name_prefix,
 }
 
 std::vector<TH2D*> MakeAngleCorrelationHistograms(const char *name_prefix,
-                                                  const char *title_prefix,
+                                                  const char *theta_label,
+                                                  const char *x_axis_title,
+                                                  const char *y_axis_title,
                                                   int nbins,
                                                   double xmin_mm,
                                                   double xmax_mm) {
@@ -232,8 +271,9 @@ std::vector<TH2D*> MakeAngleCorrelationHistograms(const char *name_prefix,
   for (int i = 0; i < kNAngleBins; ++i) {
     histograms.push_back(new TH2D(
       Form("%s_angle_%02d", name_prefix, i),
-      Form("%s: %.0f #leq #theta < %.0f deg;external expected - true FROST [mm];FROST reco - true FROST [mm]",
-           title_prefix, kAngleBins[i], kAngleBins[i + 1]),
+      Form("%.0f #leq #theta_{%s} < %.0f deg;%s;%s",
+           kAngleBins[i], theta_label, kAngleBins[i + 1],
+           x_axis_title, y_axis_title),
       nbins,
       xmin_mm,
       xmax_mm,
@@ -246,6 +286,7 @@ std::vector<TH2D*> MakeAngleCorrelationHistograms(const char *name_prefix,
 }
 
 void ProcessOneFile(const std::string &file_path,
+                    SampleType sample_type,
                     TH1D *hist_x,
                     TH1D *hist_y,
                     TH1D *hist_reco_external_x,
@@ -296,6 +337,9 @@ void ProcessOneFile(const std::string &file_path,
   std::vector<double> *baby_mind_tangent_y = nullptr;
   std::vector<int> *ninja_track_type = nullptr;
 
+  Int_t bsd_good_spill_flag = 0;
+  Int_t detector_flags[8] = {};
+
   bool ok = true;
   ok &= SetVectorBranchAddress(tree, "trackmatch_has_match", &has_match);
   ok &= SetVectorBranchAddress(
@@ -315,15 +359,36 @@ void ProcessOneFile(const std::string &file_path,
   ok &= SetVectorBranchAddress(
     tree, "trackmatch_frost_nearest_y", &frost_nearest_y);
   ok &= SetVectorBranchAddress(
-    tree, "trackmatch_true_frost_nearest_position_x", &true_frost_x);
-  ok &= SetVectorBranchAddress(
-    tree, "trackmatch_true_frost_nearest_position_y", &true_frost_y);
-  ok &= SetVectorBranchAddress(
     tree, "trackmatch_baby_mind_tangent_x", &baby_mind_tangent_x);
   ok &= SetVectorBranchAddress(
     tree, "trackmatch_baby_mind_tangent_y", &baby_mind_tangent_y);
   ok &= SetVectorBranchAddress(
     tree, "trackmatch_ninja_track_type", &ninja_track_type);
+
+  if (IsMonteCarlo(sample_type)) {
+    ok &= SetVectorBranchAddress(
+      tree, "trackmatch_true_frost_nearest_position_x", &true_frost_x);
+    ok &= SetVectorBranchAddress(
+      tree, "trackmatch_true_frost_nearest_position_y", &true_frost_y);
+  }
+
+  if (IsData(sample_type)) {
+    if (!tree->GetBranch("bsd_good_spill_flag")) {
+      std::cerr << "Error: required branch is missing: bsd_good_spill_flag"
+                << std::endl;
+      ok = false;
+    } else {
+      tree->SetBranchAddress("bsd_good_spill_flag", &bsd_good_spill_flag);
+    }
+
+    if (!tree->GetBranch("detector_flags")) {
+      std::cerr << "Error: required branch is missing: detector_flags"
+                << std::endl;
+      ok = false;
+    } else {
+      tree->SetBranchAddress("detector_flags", detector_flags);
+    }
+  }
 
   if (!ok) {
     std::cerr << "Warning: skip file because required branches are missing: "
@@ -334,6 +399,15 @@ void ProcessOneFile(const std::string &file_path,
   const Long64_t nentries = tree->GetEntries();
   for (Long64_t entry = 0; entry < nentries; ++entry) {
     tree->GetEntry(entry);
+
+    if (IsData(sample_type)) {
+      if (bsd_good_spill_flag == 0) {
+        continue;
+      }
+      if (detector_flags[0] != 1 || detector_flags[2] != 1) {
+        continue;
+      }
+    }
 
     if (!has_match) {
       continue;
@@ -376,12 +450,15 @@ void ProcessOneFile(const std::string &file_path,
 
       const double tangent_x = baby_mind_tangent_x->at(itrack);
       const double tangent_y = baby_mind_tangent_y->at(itrack);
-      const double angle_deg =
-        std::atan(std::sqrt(tangent_x * tangent_x +
-                            tangent_y * tangent_y)) * 180.0 / TMath::Pi();
+      const double theta_x_deg =
+        std::atan(std::abs(tangent_x)) * 180.0 / TMath::Pi();
+      const double theta_y_deg =
+        std::atan(std::abs(tangent_y)) * 180.0 / TMath::Pi();
 
-      const int angle_bin = FindAngleBin(angle_deg);
-      const bool has_angle_bin = (angle_bin >= 0);
+      const int angle_bin_x = FindAngleBin(theta_x_deg);
+      const int angle_bin_y = FindAngleBin(theta_y_deg);
+      const bool has_angle_bin_x = (angle_bin_x >= 0);
+      const bool has_angle_bin_y = (angle_bin_y >= 0);
 
       const bool common_external_plane_selected =
         HasIndex(n_dwg_x, itrack) &&
@@ -402,30 +479,32 @@ void ProcessOneFile(const std::string &file_path,
         IsValidValue(external_expected_x->at(itrack));
 
       if (x_base_selected &&
-          HasIndex(true_frost_x, itrack) &&
-          IsValidValue(true_frost_x->at(itrack))) {
-        hist_x->Fill(external_expected_x->at(itrack) -
-                     true_frost_x->at(itrack));
-        ++n_tracks_x;
-        if (has_angle_bin) {
-          hist_external_truth_x_by_angle.at(angle_bin)->Fill(
-            external_expected_x->at(itrack) - true_frost_x->at(itrack));
-        }
-      }
-
-      if (x_base_selected &&
           HasIndex(frost_nearest_x, itrack) &&
           IsValidValue(frost_nearest_x->at(itrack))) {
         hist_reco_external_x->Fill(frost_nearest_x->at(itrack) -
                                    external_expected_x->at(itrack));
+        ++n_tracks_x;
 
-        if (has_angle_bin) {
-          hist_reco_external_x_by_angle.at(angle_bin)->Fill(
+        if (has_angle_bin_x) {
+          hist_reco_external_x_by_angle.at(angle_bin_x)->Fill(
             frost_nearest_x->at(itrack) - external_expected_x->at(itrack));
         }
       }
 
-      if (x_base_selected &&
+      if (IsMonteCarlo(sample_type) &&
+          x_base_selected &&
+          HasIndex(true_frost_x, itrack) &&
+          IsValidValue(true_frost_x->at(itrack))) {
+        hist_x->Fill(external_expected_x->at(itrack) -
+                     true_frost_x->at(itrack));
+        if (has_angle_bin_x) {
+          hist_external_truth_x_by_angle.at(angle_bin_x)->Fill(
+            external_expected_x->at(itrack) - true_frost_x->at(itrack));
+        }
+      }
+
+      if (IsMonteCarlo(sample_type) &&
+          x_base_selected &&
           HasIndex(frost_nearest_x, itrack) &&
           HasIndex(true_frost_x, itrack) &&
           IsValidValue(frost_nearest_x->at(itrack)) &&
@@ -439,11 +518,11 @@ void ProcessOneFile(const std::string &file_path,
         hist_correlation_x->Fill(external_minus_true_x, reco_minus_true_x);
         correlation_stats_x.Fill(external_minus_true_x, reco_minus_true_x);
 
-        if (has_angle_bin) {
-          hist_reco_truth_x_by_angle.at(angle_bin)->Fill(reco_minus_true_x);
-          hist_correlation_x_by_angle.at(angle_bin)->Fill(
+        if (has_angle_bin_x) {
+          hist_reco_truth_x_by_angle.at(angle_bin_x)->Fill(reco_minus_true_x);
+          hist_correlation_x_by_angle.at(angle_bin_x)->Fill(
             external_minus_true_x, reco_minus_true_x);
-          correlation_stats_x_by_angle.at(angle_bin).Fill(
+          correlation_stats_x_by_angle.at(angle_bin_x).Fill(
             external_minus_true_x, reco_minus_true_x);
         }
       }
@@ -453,31 +532,33 @@ void ProcessOneFile(const std::string &file_path,
         IsValidValue(external_expected_y->at(itrack));
 
       if (y_base_selected &&
-          HasIndex(true_frost_y, itrack) &&
-          IsValidValue(true_frost_y->at(itrack))) {
-        hist_y->Fill(external_expected_y->at(itrack) -
-                     true_frost_y->at(itrack));
-        ++n_tracks_y;
-
-        if (has_angle_bin) {
-          hist_external_truth_y_by_angle.at(angle_bin)->Fill(
-            external_expected_y->at(itrack) - true_frost_y->at(itrack));
-        }
-      }
-
-      if (y_base_selected &&
           HasIndex(frost_nearest_y, itrack) &&
           IsValidValue(frost_nearest_y->at(itrack))) {
         hist_reco_external_y->Fill(frost_nearest_y->at(itrack) -
                                    external_expected_y->at(itrack));
+        ++n_tracks_y;
 
-        if (has_angle_bin) {
-          hist_reco_external_y_by_angle.at(angle_bin)->Fill(
+        if (has_angle_bin_y) {
+          hist_reco_external_y_by_angle.at(angle_bin_y)->Fill(
             frost_nearest_y->at(itrack) - external_expected_y->at(itrack));
         }
       }
 
-      if (y_base_selected &&
+      if (IsMonteCarlo(sample_type) &&
+          y_base_selected &&
+          HasIndex(true_frost_y, itrack) &&
+          IsValidValue(true_frost_y->at(itrack))) {
+        hist_y->Fill(external_expected_y->at(itrack) -
+                     true_frost_y->at(itrack));
+
+        if (has_angle_bin_y) {
+          hist_external_truth_y_by_angle.at(angle_bin_y)->Fill(
+            external_expected_y->at(itrack) - true_frost_y->at(itrack));
+        }
+      }
+
+      if (IsMonteCarlo(sample_type) &&
+          y_base_selected &&
           HasIndex(frost_nearest_y, itrack) &&
           HasIndex(true_frost_y, itrack) &&
           IsValidValue(frost_nearest_y->at(itrack)) &&
@@ -491,11 +572,11 @@ void ProcessOneFile(const std::string &file_path,
         hist_correlation_y->Fill(external_minus_true_y, reco_minus_true_y);
         correlation_stats_y.Fill(external_minus_true_y, reco_minus_true_y);
 
-        if (has_angle_bin) {
-          hist_reco_truth_y_by_angle.at(angle_bin)->Fill(reco_minus_true_y);
-          hist_correlation_y_by_angle.at(angle_bin)->Fill(
+        if (has_angle_bin_y) {
+          hist_reco_truth_y_by_angle.at(angle_bin_y)->Fill(reco_minus_true_y);
+          hist_correlation_y_by_angle.at(angle_bin_y)->Fill(
             external_minus_true_y, reco_minus_true_y);
-          correlation_stats_y_by_angle.at(angle_bin).Fill(
+          correlation_stats_y_by_angle.at(angle_bin_y).Fill(
             external_minus_true_y, reco_minus_true_y);
         }
       }
@@ -546,9 +627,13 @@ void DrawCentral68Text(TH1D *hist) {
 }
 
 void DrawHistogram(TH1D *hist) {
+  gPad->SetLeftMargin(0.17);
+  gPad->SetRightMargin(0.05);
+  gPad->SetBottomMargin(0.13);
+
   hist->SetLineWidth(2);
   hist->GetXaxis()->SetTitleOffset(1.15);
-  hist->GetYaxis()->SetTitleOffset(1.25);
+  hist->GetYaxis()->SetTitleOffset(1.65);
   hist->Draw("hist");
 
   if (hist->GetEntries() > 0) {
@@ -608,8 +693,12 @@ void DrawCorrelationText(const CorrelationStats &stats) {
 }
 
 void DrawCorrelationHistogram(TH2D *hist, const CorrelationStats &stats) {
+  gPad->SetLeftMargin(0.17);
+  gPad->SetRightMargin(0.16);
+  gPad->SetBottomMargin(0.13);
+
   hist->GetXaxis()->SetTitleOffset(1.15);
-  hist->GetYaxis()->SetTitleOffset(1.25);
+  hist->GetYaxis()->SetTitleOffset(1.65);
   hist->Draw("colz");
   DrawCorrelationText(stats);
 }
@@ -678,18 +767,22 @@ void PrintAngleCorrelationPages(
 
 }  // namespace
 
-// void DrawExternalFrostTruthResidual(const char *input_dir="/group/nu/ninja/work/otani/FROSTReconData/Artificial_sandmuonMC/6-TrackMatch_externalfit_PMandDWG",
-//                                     const char *output_pdf="/group/nu/ninja/work/otani/FROSTReconData/Artificial_sandmuonMC/6-TrackMatch_externalfit_PMandDWG/residual_external_true.pdf",
-//                                     int nbins = 200,
-//                                     double xmin_mm = -50.,
-//                                     double xmax_mm = 50.) {
-void DrawExternalFrostTruthResidual(const char *input_dir="/group/nu/ninja/work/otani/FROSTReconData/BM_FROST_BMWGPM/2-rootfile_after_TrackMatch_externalfit_PMandDWG",
-                                    const char *output_pdf="/group/nu/ninja/work/otani/FROSTReconData/BM_FROST_BMWGPM/2-rootfile_after_TrackMatch_externalfit_PMandDWG/residual_rec_external.pdf",
+void DrawExternalFrostTruthResidual(const char *input_dir="/group/nu/ninja/work/otani/FROSTReconData/Artificial_sandmuonMC/6-TrackMatch_externalfit_PMandDWG",
+                                    const char *output_pdf="/group/nu/ninja/work/otani/FROSTReconData/Artificial_sandmuonMC/6-TrackMatch_externalfit_PMandDWG/residual_external_true.pdf",
+                                    const char *sample_type_arg="mc",
                                     int nbins = 200,
                                     double xmin_mm = -50.,
                                     double xmax_mm = 50.) {
+// void DrawExternalFrostTruthResidual(const char *input_dir="/group/nu/ninja/work/otani/FROSTReconData/BM_FROST_BMWGPM/2-rootfile_after_TrackMatch_externalfit_PMandDWG",
+//                                     const char *output_pdf="/group/nu/ninja/work/otani/FROSTReconData/BM_FROST_BMWGPM/2-rootfile_after_TrackMatch_externalfit_PMandDWG/residual_rec_external.pdf",
+//                                     const char *sample_type_arg="data",
+//                                     int nbins = 200,
+//                                     double xmin_mm = -50.,
+//                                     double xmax_mm = 50.) {
   gStyle->SetOptStat(1110);
   gStyle->SetOptFit(1111);
+
+  const SampleType sample_type = ParseSampleType(sample_type_arg);
 
   const std::vector<std::string> root_files = FindRootFiles(input_dir);
   if (root_files.empty()) {
@@ -700,49 +793,49 @@ void DrawExternalFrostTruthResidual(const char *input_dir="/group/nu/ninja/work/
 
   auto *hist_x = new TH1D(
     "hist_external_truth_residual_x",
-    "External-track prediction minus FROST truth;external expected x - true FROST x [mm];Number of tracks",
+    "All angles;x_{ext}-x_{true} [mm];Number of tracks",
     nbins,
     xmin_mm,
     xmax_mm);
 
   auto *hist_y = new TH1D(
     "hist_external_truth_residual_y",
-    "External-track prediction minus FROST truth;external expected y - true FROST y [mm];Number of tracks",
+    "All angles;y_{ext}-y_{true} [mm];Number of tracks",
     nbins,
     xmin_mm,
     xmax_mm);
 
   auto *hist_reco_external_x = new TH1D(
     "hist_reco_external_residual_x",
-    "FROST reco minus external-track prediction;FROST reco x - external expected x [mm];Number of tracks",
+    "All angles;x_{rec}-x_{ext} [mm];Number of tracks",
     nbins,
     xmin_mm,
     xmax_mm);
 
   auto *hist_reco_external_y = new TH1D(
     "hist_reco_external_residual_y",
-    "FROST reco minus external-track prediction;FROST reco y - external expected y [mm];Number of tracks",
+    "All angles;y_{rec}-y_{ext} [mm];Number of tracks",
     nbins,
     xmin_mm,
     xmax_mm);
 
   auto *hist_reco_truth_x = new TH1D(
     "hist_reco_truth_residual_x",
-    "FROST reco minus FROST truth;FROST reco x - true FROST x [mm];Number of tracks",
+    "All angles;x_{rec}-x_{true} [mm];Number of tracks",
     nbins,
     xmin_mm,
     xmax_mm);
 
   auto *hist_reco_truth_y = new TH1D(
     "hist_reco_truth_residual_y",
-    "FROST reco minus FROST truth;FROST reco y - true FROST y [mm];Number of tracks",
+    "All angles;y_{rec}-y_{true} [mm];Number of tracks",
     nbins,
     xmin_mm,
     xmax_mm);
 
   auto *hist_correlation_x = new TH2D(
     "hist_correlation_x",
-    "Correlation of residuals, x;external expected x - true FROST x [mm];FROST reco x - true FROST x [mm]",
+    "All angles;x_{ext}-x_{true} [mm];x_{rec}-x_{true} [mm]",
     nbins,
     xmin_mm,
     xmax_mm,
@@ -752,7 +845,7 @@ void DrawExternalFrostTruthResidual(const char *input_dir="/group/nu/ninja/work/
 
   auto *hist_correlation_y = new TH2D(
     "hist_correlation_y",
-    "Correlation of residuals, y;external expected y - true FROST y [mm];FROST reco y - true FROST y [mm]",
+    "All angles;y_{ext}-y_{true} [mm];y_{rec}-y_{true} [mm]",
     nbins,
     xmin_mm,
     xmax_mm,
@@ -762,62 +855,66 @@ void DrawExternalFrostTruthResidual(const char *input_dir="/group/nu/ninja/work/
 
   auto hist_correlation_x_by_angle = MakeAngleCorrelationHistograms(
     "hist_correlation_x",
-    "Correlation of residuals, x",
+    "x",
+    "x_{ext}-x_{true} [mm]",
+    "x_{rec}-x_{true} [mm]",
     nbins,
     xmin_mm,
     xmax_mm);
 
   auto hist_correlation_y_by_angle = MakeAngleCorrelationHistograms(
     "hist_correlation_y",
-    "Correlation of residuals, y",
+    "y",
+    "y_{ext}-y_{true} [mm]",
+    "y_{rec}-y_{true} [mm]",
     nbins,
     xmin_mm,
     xmax_mm);
 
   auto hist_external_truth_x_by_angle = MakeAngleHistograms(
     "hist_external_truth_residual_x",
-    "External-track prediction minus FROST truth, x",
-    "external expected x - true FROST x [mm]",
+    "x",
+    "x_{ext}-x_{true} [mm]",
     nbins,
     xmin_mm,
     xmax_mm);
 
   auto hist_external_truth_y_by_angle = MakeAngleHistograms(
     "hist_external_truth_residual_y",
-    "External-track prediction minus FROST truth, y",
-    "external expected y - true FROST y [mm]",
+    "y",
+    "y_{ext}-y_{true} [mm]",
     nbins,
     xmin_mm,
     xmax_mm);
 
   auto hist_reco_external_x_by_angle = MakeAngleHistograms(
     "hist_reco_external_residual_x",
-    "FROST reco minus external-track prediction, x",
-    "FROST reco x - external expected x [mm]",
+    "x",
+    "x_{rec}-x_{ext} [mm]",
     nbins,
     xmin_mm,
     xmax_mm);
 
   auto hist_reco_external_y_by_angle = MakeAngleHistograms(
     "hist_reco_external_residual_y",
-    "FROST reco minus external-track prediction, y",
-    "FROST reco y - external expected y [mm]",
+    "y",
+    "y_{rec}-y_{ext} [mm]",
     nbins,
     xmin_mm,
     xmax_mm);
 
   auto hist_reco_truth_x_by_angle = MakeAngleHistograms(
     "hist_reco_truth_residual_x",
-    "FROST reco minus FROST truth, x",
-    "FROST reco x - true FROST x [mm]",
+    "x",
+    "x_{rec}-x_{true} [mm]",
     nbins,
     xmin_mm,
     xmax_mm);
 
   auto hist_reco_truth_y_by_angle = MakeAngleHistograms(
     "hist_reco_truth_residual_y",
-    "FROST reco minus FROST truth, y",
-    "FROST reco y - true FROST y [mm]",
+    "y",
+    "y_{rec}-y_{true} [mm]",
     nbins,
     xmin_mm,
     xmax_mm);
@@ -833,6 +930,7 @@ void DrawExternalFrostTruthResidual(const char *input_dir="/group/nu/ninja/work/
   for (const auto &file_path : root_files) {
     std::cout << "Processing: " << file_path << std::endl;
     ProcessOneFile(file_path,
+                   sample_type,
                    hist_x,
                    hist_y,
                    hist_reco_external_x,
@@ -859,44 +957,47 @@ void DrawExternalFrostTruthResidual(const char *input_dir="/group/nu/ninja/work/
 
   std::cout << "Selected tracks for x: " << n_tracks_x << std::endl;
   std::cout << "Selected tracks for y: " << n_tracks_y << std::endl;
-  double mean_e = 0.;
-  double mean_r = 0.;
-  double rms_e = 0.;
-  double rms_r = 0.;
-  double covariance = 0.;
-  double correlation = 0.;
 
-  if (correlation_stats_x.Calculate(mean_e, mean_r, rms_e, rms_r,
-                                    covariance, correlation)) {
-    std::cout << "All-angle x correlation:"
-              << " N=" << correlation_stats_x.n
-              << ", Cov(E,R)=" << covariance << " mm^2"
-              << ", rho=" << correlation << std::endl;
-  }
-  if (correlation_stats_y.Calculate(mean_e, mean_r, rms_e, rms_r,
-                                    covariance, correlation)) {
-    std::cout << "All-angle y correlation:"
-              << " N=" << correlation_stats_y.n
-              << ", Cov(E,R)=" << covariance << " mm^2"
-              << ", rho=" << correlation << std::endl;
-  }
+  if (IsMonteCarlo(sample_type)) {
+    double mean_e = 0.;
+    double mean_r = 0.;
+    double rms_e = 0.;
+    double rms_r = 0.;
+    double covariance = 0.;
+    double correlation = 0.;
 
-  for (int i = 0; i < kNAngleBins; ++i) {
-    if (correlation_stats_x_by_angle.at(i).Calculate(
-          mean_e, mean_r, rms_e, rms_r, covariance, correlation)) {
-      std::cout << Form("Angle %.0f-%.0f deg x correlation: ",
-                        kAngleBins[i], kAngleBins[i + 1])
-                << "N=" << correlation_stats_x_by_angle.at(i).n
+    if (correlation_stats_x.Calculate(mean_e, mean_r, rms_e, rms_r,
+                                      covariance, correlation)) {
+      std::cout << "All-angle x correlation:"
+                << " N=" << correlation_stats_x.n
                 << ", Cov(E,R)=" << covariance << " mm^2"
                 << ", rho=" << correlation << std::endl;
     }
-    if (correlation_stats_y_by_angle.at(i).Calculate(
-          mean_e, mean_r, rms_e, rms_r, covariance, correlation)) {
-      std::cout << Form("Angle %.0f-%.0f deg y correlation: ",
-                        kAngleBins[i], kAngleBins[i + 1])
-                << "N=" << correlation_stats_y_by_angle.at(i).n
+    if (correlation_stats_y.Calculate(mean_e, mean_r, rms_e, rms_r,
+                                      covariance, correlation)) {
+      std::cout << "All-angle y correlation:"
+                << " N=" << correlation_stats_y.n
                 << ", Cov(E,R)=" << covariance << " mm^2"
                 << ", rho=" << correlation << std::endl;
+    }
+
+    for (int i = 0; i < kNAngleBins; ++i) {
+      if (correlation_stats_x_by_angle.at(i).Calculate(
+            mean_e, mean_r, rms_e, rms_r, covariance, correlation)) {
+        std::cout << Form("Angle %.0f-%.0f deg theta_x correlation: ",
+                          kAngleBins[i], kAngleBins[i + 1])
+                  << "N=" << correlation_stats_x_by_angle.at(i).n
+                  << ", Cov(E,R)=" << covariance << " mm^2"
+                  << ", rho=" << correlation << std::endl;
+      }
+      if (correlation_stats_y_by_angle.at(i).Calculate(
+            mean_e, mean_r, rms_e, rms_r, covariance, correlation)) {
+        std::cout << Form("Angle %.0f-%.0f deg theta_y correlation: ",
+                          kAngleBins[i], kAngleBins[i + 1])
+                  << "N=" << correlation_stats_y_by_angle.at(i).n
+                  << ", Cov(E,R)=" << covariance << " mm^2"
+                  << ", rho=" << correlation << std::endl;
+      }
     }
   }
 
@@ -906,42 +1007,53 @@ void DrawExternalFrostTruthResidual(const char *input_dir="/group/nu/ninja/work/
   TString pdf_close = output_pdf;
   pdf_close += ")";
 
-  DrawTwoPanelPage(canvas, hist_x, hist_y);
-  canvas.Print(pdf_open);
+  if (IsMonteCarlo(sample_type)) {
+    DrawTwoPanelPage(canvas, hist_x, hist_y);
+    canvas.Print(pdf_open);
 
-  DrawTwoPanelPage(canvas, hist_reco_external_x, hist_reco_external_y);
-  canvas.Print(output_pdf);
+    DrawTwoPanelPage(canvas, hist_reco_external_x, hist_reco_external_y);
+    canvas.Print(output_pdf);
 
-  DrawTwoPanelPage(canvas, hist_reco_truth_x, hist_reco_truth_y);
-  canvas.Print(output_pdf);
+    DrawTwoPanelPage(canvas, hist_reco_truth_x, hist_reco_truth_y);
+    canvas.Print(output_pdf);
 
-  PrintAnglePages(canvas,
-                  output_pdf,
-                  hist_external_truth_x_by_angle,
-                  hist_external_truth_y_by_angle);
+    PrintAnglePages(canvas,
+                    output_pdf,
+                    hist_external_truth_x_by_angle,
+                    hist_external_truth_y_by_angle);
 
-  PrintAnglePages(canvas,
-                  output_pdf,
-                  hist_reco_external_x_by_angle,
-                  hist_reco_external_y_by_angle);
+    PrintAnglePages(canvas,
+                    output_pdf,
+                    hist_reco_external_x_by_angle,
+                    hist_reco_external_y_by_angle);
 
-  PrintAnglePages(canvas,
-                  output_pdf,
-                  hist_reco_truth_x_by_angle,
-                  hist_reco_truth_y_by_angle);
+    PrintAnglePages(canvas,
+                    output_pdf,
+                    hist_reco_truth_x_by_angle,
+                    hist_reco_truth_y_by_angle);
 
-  DrawCorrelationTwoPanelPage(canvas,
-                              hist_correlation_x,
-                              hist_correlation_y,
-                              correlation_stats_x,
-                              correlation_stats_y);
-  canvas.Print(output_pdf);
+    DrawCorrelationTwoPanelPage(canvas,
+                                hist_correlation_x,
+                                hist_correlation_y,
+                                correlation_stats_x,
+                                correlation_stats_y);
+    canvas.Print(output_pdf);
 
-  PrintAngleCorrelationPages(canvas,
-                             output_pdf,
-                             hist_correlation_x_by_angle,
-                             hist_correlation_y_by_angle,
-                             correlation_stats_x_by_angle,
-                             correlation_stats_y_by_angle,
-                             true);
+    PrintAngleCorrelationPages(canvas,
+                               output_pdf,
+                               hist_correlation_x_by_angle,
+                               hist_correlation_y_by_angle,
+                               correlation_stats_x_by_angle,
+                               correlation_stats_y_by_angle,
+                               true);
+  } else {
+    DrawTwoPanelPage(canvas, hist_reco_external_x, hist_reco_external_y);
+    canvas.Print(pdf_open);
+
+    PrintAnglePages(canvas,
+                    output_pdf,
+                    hist_reco_external_x_by_angle,
+                    hist_reco_external_y_by_angle,
+                    true);
+  }
 }

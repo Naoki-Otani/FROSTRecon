@@ -1009,6 +1009,18 @@ bool UseHitForExternalTrackFit(
   return true;
 }
 
+double UniformSigmaFromInterval(double min_value, double max_value) {
+  const double width = max_value - min_value;
+  if (width <= 0.) {
+    return 0.;
+  }
+
+  // The hit position is assumed to be uniformly distributed within the
+  // scintillator segment interval.  Therefore the standard deviation is
+  // segment width / sqrt(12), not the half width.
+  return width / std::sqrt(12.);
+}
+
 void IncrementExternalPlaneCount(ExternalTrackFitResult &result,
                                  int detector_id,
                                  int view) {
@@ -1101,14 +1113,17 @@ std::vector<ExternalFitRawHit> CollectExternalFitRawHits(
       raw_hit.view = view;
       raw_hit.plane = plane;
       raw_hit.z = frost_position.Z();
-      raw_hit.z_error = local_error.Z();
+      // B2Dimension::GetError() gives the half size of the segment.
+      // Store it here as the geometrical half width; it is converted to
+      // width / sqrt(12) after hits are merged into one fit point.
+      raw_hit.z_error = std::fabs(local_error.Z());
 
       if (view == B2View::kTopView) {
         raw_hit.position = frost_position.X();
-        raw_hit.position_error = local_error.X();
+        raw_hit.position_error = std::fabs(local_error.X());
       } else if (view == B2View::kSideView) {
         raw_hit.position = frost_position.Y();
-        raw_hit.position_error = local_error.Y();
+        raw_hit.position_error = std::fabs(local_error.Y());
       }
 
       raw_hits.push_back(raw_hit);
@@ -1160,10 +1175,16 @@ std::vector<ExternalFitPoint> BuildExternalFitPoints(
     point.plane = key.plane;
     point.position = position_sum / static_cast<double>(hits.size());
     point.z = 0.5 * (z_min + z_max);
-    point.position_error_low = point.position - position_min;
-    point.position_error_high = position_max - point.position;
-    point.z_error_low = point.z - z_min;
-    point.z_error_high = z_max - point.z;
+
+    const double position_sigma =
+      UniformSigmaFromInterval(position_min, position_max);
+    const double z_sigma =
+      UniformSigmaFromInterval(z_min, z_max);
+
+    point.position_error_low = position_sigma;
+    point.position_error_high = position_sigma;
+    point.z_error_low = z_sigma;
+    point.z_error_high = z_sigma;
     fit_points.push_back(point);
   }
 
