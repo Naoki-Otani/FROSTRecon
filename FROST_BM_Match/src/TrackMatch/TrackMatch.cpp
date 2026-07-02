@@ -925,10 +925,18 @@ std::vector<double> CalculateExpectedPosition(NTBMSummary *ntbm, int itrack, dou
 }
 
 bool IsExternalFitDetector(int detector_id) {
-  return detector_id == B2Detector::kWagasciUpstream ||
-         detector_id == B2Detector::kProtonModule ||
-         detector_id == B2Detector::kWagasciDownstream ||
-         detector_id == B2Detector::kBabyMind;
+  // return detector_id == B2Detector::kWagasciUpstream ||
+  //        detector_id == B2Detector::kProtonModule ||
+  //        detector_id == B2Detector::kWagasciDownstream ||
+  //        detector_id == B2Detector::kBabyMind;
+  return detector_id == B2Detector::kProtonModule ||
+         detector_id == B2Detector::kWagasciDownstream;
+  // return detector_id == B2Detector::kWagasciUpstream ||
+        //  detector_id == B2Detector::kProtonModule ||
+        //  detector_id == B2Detector::kWagasciDownstream;
+  // return detector_id == B2Detector::kProtonModule ||
+  //        detector_id == B2Detector::kBabyMind;
+  // return detector_id == B2Detector::kProtonModule;
 }
 
 TVector3 GetDetectorCenterPosition(int detector_id) {

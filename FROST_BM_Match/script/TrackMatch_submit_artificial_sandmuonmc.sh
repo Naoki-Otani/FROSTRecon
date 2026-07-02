@@ -3,11 +3,10 @@
 set -eu
 
 # ========= path settings =========
-ROOT_IN_DIR="/group/nu/ninja/work/otani/FROSTReconData/SandmuonMC/5-FROSTRecon"
-# ROOT_OUT_DIR="/group/nu/ninja/work/otani/FROSTReconData/SandmuonMC/6-TrackMatch"
-# ROOT_OUT_DIR="/group/nu/ninja/work/otani/FROSTReconData/SandmuonMC/6-TrackMatch_externalfit"
-# ROOT_OUT_DIR="/group/nu/ninja/work/otani/FROSTReconData/SandmuonMC/6-TrackMatch_externalfit_PMandDWG_"
-ROOT_OUT_DIR="/group/nu/ninja/work/otani/FROSTReconData/SandmuonMC/6-TrackMatch_externalfit_UWGandPMandDWG"
+ROOT_IN_DIR="/group/nu/ninja/work/otani/FROSTReconData/Artificial_sandmuonMC/5-FROSTRecon"
+# ROOT_OUT_DIR="/group/nu/ninja/work/otani/FROSTReconData/Artificial_sandmuonMC/6-TrackMatch_externalfit_PMandDWG"
+# ROOT_OUT_DIR="/group/nu/ninja/work/otani/FROSTReconData/Artificial_sandmuonMC/6-TrackMatch_externalfit_PMandBM"
+ROOT_OUT_DIR="/group/nu/ninja/work/otani/FROSTReconData/Artificial_sandmuonMC/6-TrackMatch_externalfit_PMonly"
 OUT_DIR="$ROOT_OUT_DIR/out"
 
 SIF="/home/nu/notani/wagasci_ana_0.2.4.sif"
@@ -24,9 +23,9 @@ for input_file in "$ROOT_IN_DIR"/*.root; do
     [ -e "$input_file" ] || continue
 
     input_base=$(basename "$input_file")
-    suffix="${input_base#sandmuonmc_frostrecon_}"
-    root_out_file="$ROOT_OUT_DIR/sandmuonmc_trackmatch_${suffix}"
-    out_file="$OUT_DIR/sandmuonmc_trackmatch_${suffix%.root}.out"
+    suffix="${input_base#artificial_sandmuonmc_frostrecon_}"
+    root_out_file="$ROOT_OUT_DIR/artificial_sandmuonmc_trackmatch_${suffix}"
+    out_file="$OUT_DIR/artificial_sandmuonmc_trackmatch_${suffix%.root}.out"
 
     echo "Submitting job for:"
     echo "  input ROOT file : $input_file"

@@ -372,7 +372,8 @@ FrostMatchResult FindMatchingFrostEvent(const B2SpillSummary &spill,
                                         Long64_t anchor_entry) {
   FrostMatchResult best_match;
 
-  const Int_t wagasci_spill = spill.GetBeamSummary().GetWagasciSpillNumber();
+  // const Int_t wagasci_spill = spill.GetBeamSummary().GetWagasciSpillNumber();
+  const Int_t wagasci_spill = spill.GetBeamSummary().GetBsdSpillNumber();
   const Int_t wagasci_unixtime =
       static_cast<Int_t>(spill.GetBeamSummary().GetTimestamp());
 
@@ -640,7 +641,8 @@ int main(int argc, char *argv[]) {
       while (reader.ReadNextSpill() > 0) {
         auto &output_spill_summary = writer.GetSpillSummary();
 
-        const Int_t wagasci_spill = output_spill_summary.GetBeamSummary().GetWagasciSpillNumber();
+        // const Int_t wagasci_spill = output_spill_summary.GetBeamSummary().GetWagasciSpillNumber();
+        const Int_t wagasci_spill = output_spill_summary.GetBeamSummary().GetBsdSpillNumber();
         const Int_t wagasci_unixtime =
             static_cast<Int_t>(output_spill_summary.GetBeamSummary().GetTimestamp());
 

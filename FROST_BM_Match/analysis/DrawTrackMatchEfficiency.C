@@ -124,12 +124,19 @@ namespace {
   };
 }
 
+// void DrawTrackMatchEfficiency(
+//     const char *inputDir = "/group/nu/ninja/work/otani/FROSTReconData/BM_FROST/rootfile_after_TrackMatch_withoutWG_dx-1.30_dy+25.87",
+//     const char *outputPdfPath = "/group/nu/ninja/work/otani/FROSTReconData/BM_FROST/analysis_plot/efficiency_dx-1.30_dy+25.87_below40deg.pdf",
+//     const char *logFilePath = "/group/nu/ninja/work/otani/FROSTReconData/BM_FROST/analysis_plot/efficiency_dx-1.30_dy+25.87_below40deg.log",
+//     const std::vector<std::string> &excludedFiles = std::vector<std::string>
+//     {"BMPM_track_2025-11-29_00-00-00_afterTrackMatch.root", "BMPM_track_2025-11-30_00-00-00_afterTrackMatch.root"}
+//     ) {
 void DrawTrackMatchEfficiency(
-    const char *inputDir = "/group/nu/ninja/work/otani/FROSTReconData/BM_FROST/rootfile_after_TrackMatch_withoutWG_dx-1.30_dy+25.87",
-    const char *outputPdfPath = "/group/nu/ninja/work/otani/FROSTReconData/BM_FROST/analysis_plot/efficiency_dx-1.30_dy+25.87_below40deg.pdf",
-    const char *logFilePath = "/group/nu/ninja/work/otani/FROSTReconData/BM_FROST/analysis_plot/efficiency_dx-1.30_dy+25.87_below40deg.log",
+    const char *inputDir = "/group/nu/ninja/work/otani/FROSTReconData/BM_FROST_BMWGPM/2-rootfile_after_TrackMatch_externalfit_PMandDWG",
+    const char *outputPdfPath = "/group/nu/ninja/work/otani/FROSTReconData/BM_FROST_BMWGPM/2-rootfile_after_TrackMatch_externalfit_PMandDWG/efficiency.pdf",
+    const char *logFilePath = "/group/nu/ninja/work/otani/FROSTReconData/BM_FROST_BMWGPM/2-rootfile_after_TrackMatch_externalfit_PMandDWG/efficiency.log",
     const std::vector<std::string> &excludedFiles = std::vector<std::string>
-    {"BMPM_track_2025-11-29_00-00-00_afterTrackMatch.root", "BMPM_track_2025-11-30_00-00-00_afterTrackMatch.root"}
+    {"b2physics_track_2025-11-29_00-00-00_afterTrackMatch.root", "b2physics_track_2025-11-30_00-00-00_afterTrackMatch.root"}
     ) {
 
   std::ofstream logFile(logFilePath);
