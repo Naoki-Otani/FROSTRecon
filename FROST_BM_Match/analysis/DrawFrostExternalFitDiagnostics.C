@@ -6,13 +6,33 @@
 //   data:
 //     root -l -b -q 'DrawFrostExternalFitDiagnostics.C("input_dir", "output.pdf", "data")'
 //
-// The macro reads all .root files directly under input_dir, loops over the
-// match_info tree, and saves a multi-page PDF for FROST external-track
-// diagnostics.
+//   Multiple input directories can be given as a comma-separated list:
+//     root -l -b -q 'DrawFrostExternalFitDiagnostics.C("input_dir1,input_dir2", "output.pdf", "mc")'
+//
+//   To disable the position reweighting:
+//     root -l -b -q 'DrawFrostExternalFitDiagnostics.C("input_dir", "output.pdf", "mc", 200, -50, 50, "", false)'
+//
+// The macro reads all .root files directly under the input directory or
+// directories, loops over the match_info tree, and saves a multi-page PDF for
+// FROST external-track diagnostics.
 //
 // The median, mean, and sigma_68 values written on the plots and in the
-// summary log are calculated from all selected residual values, including
-// underflow and overflow values outside the displayed histogram range.
+// summary log are calculated directly from selected residual values within the
+// displayed histogram range. Underflow and overflow values are not used for
+// these residual statistics, but they are still filled into the histograms as
+// ROOT underflow/overflow entries.
+//
+// By default, the selected tracks are reweighted to reduce biases from the
+// FROST hit-position distribution. The accepted FROST area,
+//   abs(frost_nearest_x) < ACCEPTANCE_X
+//   abs(frost_nearest_y) < ACCEPTANCE_Y
+// is divided into 10 x 10 bins in the x-y plane. The event weight is assigned
+// so that each occupied position bin has the same total weight. The histogram
+// contents and the residual statistics in the summary log are calculated with
+// these position weights. Empty position bins are ignored.
+// In the summary log, n is the number of unweighted residual values inside the
+// displayed histogram range, while sum_weight is the total weight used for the
+// weighted statistics.
 //
 // In MC mode, the output contains:
 //   - x_{ext}-x_{true} and y_{ext}-y_{true}
@@ -21,10 +41,14 @@
 //   - x_{rec}-x_{true} and y_{rec}-y_{true}
 //   - 2D correlation plots of x_{ext}-x_{true} versus x_{rec}-x_{true}
 //     and y_{ext}-y_{true} versus y_{rec}-y_{true}
+//   - final pages with plane-count histograms for downstream WAGASCI and
+//     Proton Module in x and y, for all angles and for each angle bin
 //
 // In data mode, truth information is not available, so only
 // x_{rec}-x_{ext}, y_{rec}-y_{ext}, and PM-only minus DWG-only split-fit
-// residual pages are drawn.
+// residual pages are drawn. The final pages also include plane-count
+// histograms for downstream WAGASCI and Proton Module in x and y, for
+// all angles and for each angle bin.
 //
 // Selection:
 //   common:
@@ -47,6 +71,7 @@
 
 #include <TCanvas.h>
 #include <TFile.h>
+#include <TH1.h>
 #include <TH1D.h>
 #include <TH2D.h>
 #include <TList.h>
@@ -62,6 +87,7 @@
 #include <TTree.h>
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cmath>
 #include <fstream>
@@ -71,6 +97,7 @@
 #include <memory>
 #include <numeric>
 #include <stdexcept>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -84,15 +111,19 @@ constexpr int NHIT_PM_Y = 10;
 constexpr double ACCEPTANCE_X = 560.0; //mm
 constexpr double ACCEPTANCE_Y = 600.0; //mm
 
+constexpr int kNPositionBinsX = 10;
+constexpr int kNPositionBinsY = 10;
+constexpr int kNPositionBins = kNPositionBinsX * kNPositionBinsY;
+
 constexpr double kNonInitializedThreshold = -9.0e7;
 
 // Angle bins [deg]:
-//   [0,5), [5,10), [10,15), [15,20), [20,25),
-//   [25,30), [30,35), [35,40)
-constexpr int kNAngleBins = 8;
+//   [0,5), [5,10), [10,15), [15,20), [20,30),
+//   [30,50)
+constexpr int kNAngleBins = 6;
 const double kAngleBins[kNAngleBins + 1] = {
   0.0, 5.0, 10.0, 15.0, 20.0,
-  25.0, 30.0, 35.0, 40.0
+  30.0, 50.0
 };
 
 enum class SampleType {
@@ -130,19 +161,27 @@ bool IsData(SampleType sample_type) {
 
 struct CorrelationStats {
   Long64_t n = 0;
+  double sum_weight = 0.;
   double sum_e = 0.;
   double sum_r = 0.;
   double sum_ee = 0.;
   double sum_rr = 0.;
   double sum_er = 0.;
 
-  void Fill(double external_minus_true, double reco_minus_true) {
+  void Fill(double external_minus_true,
+            double reco_minus_true,
+            double weight) {
+    if (!std::isfinite(weight) || weight <= 0.) {
+      return;
+    }
+
     ++n;
-    sum_e += external_minus_true;
-    sum_r += reco_minus_true;
-    sum_ee += external_minus_true * external_minus_true;
-    sum_rr += reco_minus_true * reco_minus_true;
-    sum_er += external_minus_true * reco_minus_true;
+    sum_weight += weight;
+    sum_e += weight * external_minus_true;
+    sum_r += weight * reco_minus_true;
+    sum_ee += weight * external_minus_true * external_minus_true;
+    sum_rr += weight * reco_minus_true * reco_minus_true;
+    sum_er += weight * external_minus_true * reco_minus_true;
   }
 
   bool Calculate(double &mean_e,
@@ -151,17 +190,17 @@ struct CorrelationStats {
                  double &rms_r,
                  double &covariance,
                  double &correlation) const {
-    if (n < 2) {
+    if (n < 2 || sum_weight <= 0.) {
       return false;
     }
 
-    mean_e = sum_e / static_cast<double>(n);
-    mean_r = sum_r / static_cast<double>(n);
+    mean_e = sum_e / sum_weight;
+    mean_r = sum_r / sum_weight;
 
     const double variance_e =
-      sum_ee / static_cast<double>(n) - mean_e * mean_e;
+      sum_ee / sum_weight - mean_e * mean_e;
     const double variance_r =
-      sum_rr / static_cast<double>(n) - mean_r * mean_r;
+      sum_rr / sum_weight - mean_r * mean_r;
 
     if (variance_e <= 0. || variance_r <= 0.) {
       return false;
@@ -169,16 +208,21 @@ struct CorrelationStats {
 
     rms_e = std::sqrt(variance_e);
     rms_r = std::sqrt(variance_r);
-    covariance = sum_er / static_cast<double>(n) - mean_e * mean_r;
+    covariance = sum_er / sum_weight - mean_e * mean_r;
     correlation = covariance / (rms_e * rms_r);
 
     return std::isfinite(correlation);
   }
 };
+struct WeightedResidualValue {
+  double value = 0.;
+  double weight = 1.;
+};
 
 struct ResidualSummary {
   bool valid = false;
   Long64_t n = 0;
+  double sum_weight = 0.;
   double mean = 0.;
   double median = 0.;
   double sigma68 = 0.;
@@ -186,51 +230,88 @@ struct ResidualSummary {
   double q84 = 0.;
 };
 
-using ResidualValueMap = std::map<const TH1D*, std::vector<double>>;
+using ResidualValueMap = std::map<const TH1D*, std::vector<WeightedResidualValue>>;
 
-double CalculateQuantileFromSortedValues(const std::vector<double> &sorted_values,
-                                         double probability) {
-  if (sorted_values.empty()) {
+double CalculateWeightedQuantileFromSortedValues(
+    const std::vector<WeightedResidualValue> &sorted_values,
+    double probability,
+    double sum_weight) {
+  if (sorted_values.empty() || sum_weight <= 0.) {
     return 0.;
   }
 
   if (probability <= 0.) {
-    return sorted_values.front();
+    return sorted_values.front().value;
   }
   if (probability >= 1.) {
-    return sorted_values.back();
+    return sorted_values.back().value;
   }
 
-  const double position = probability *
-    static_cast<double>(sorted_values.size() - 1);
-  const std::size_t lower_index = static_cast<std::size_t>(std::floor(position));
-  const std::size_t upper_index = static_cast<std::size_t>(std::ceil(position));
-  const double fraction = position - static_cast<double>(lower_index);
+  const double target_weight = probability * sum_weight;
+  double cumulative_weight = 0.;
 
-  if (lower_index == upper_index) {
-    return sorted_values.at(lower_index);
+  for (const auto &entry : sorted_values) {
+    cumulative_weight += entry.weight;
+    if (cumulative_weight >= target_weight) {
+      return entry.value;
+    }
   }
 
-  return sorted_values.at(lower_index) * (1. - fraction) +
-         sorted_values.at(upper_index) * fraction;
+  return sorted_values.back().value;
 }
 
-ResidualSummary CalculateResidualSummary(const std::vector<double> &values) {
+ResidualSummary CalculateResidualSummary(
+    const std::vector<WeightedResidualValue> &values) {
   ResidualSummary summary;
   if (values.empty()) {
     return summary;
   }
 
-  std::vector<double> sorted_values = values;
-  std::sort(sorted_values.begin(), sorted_values.end());
+  std::vector<WeightedResidualValue> sorted_values;
+  sorted_values.reserve(values.size());
+  for (const auto &entry : values) {
+    if (std::isfinite(entry.value) &&
+        std::isfinite(entry.weight) &&
+        entry.weight > 0.) {
+      sorted_values.push_back(entry);
+    }
+  }
+
+  if (sorted_values.empty()) {
+    return summary;
+  }
+
+  std::sort(sorted_values.begin(),
+            sorted_values.end(),
+            [](const WeightedResidualValue &lhs,
+               const WeightedResidualValue &rhs) {
+              return lhs.value < rhs.value;
+            });
 
   summary.n = static_cast<Long64_t>(sorted_values.size());
-  summary.mean = std::accumulate(sorted_values.begin(),
-                                 sorted_values.end(),
-                                 0.0) / static_cast<double>(summary.n);
-  summary.q16 = CalculateQuantileFromSortedValues(sorted_values, 0.16);
-  summary.median = CalculateQuantileFromSortedValues(sorted_values, 0.50);
-  summary.q84 = CalculateQuantileFromSortedValues(sorted_values, 0.84);
+  double weighted_sum = 0.;
+  for (const auto &entry : sorted_values) {
+    summary.sum_weight += entry.weight;
+    weighted_sum += entry.weight * entry.value;
+  }
+
+  if (summary.sum_weight <= 0.) {
+    return summary;
+  }
+
+  summary.mean = weighted_sum / summary.sum_weight;
+  summary.q16 =
+    CalculateWeightedQuantileFromSortedValues(sorted_values,
+                                              0.16,
+                                              summary.sum_weight);
+  summary.median =
+    CalculateWeightedQuantileFromSortedValues(sorted_values,
+                                              0.50,
+                                              summary.sum_weight);
+  summary.q84 =
+    CalculateWeightedQuantileFromSortedValues(sorted_values,
+                                              0.84,
+                                              summary.sum_weight);
   summary.sigma68 = 0.5 * (summary.q84 - summary.q16);
   summary.valid = std::isfinite(summary.mean) &&
                   std::isfinite(summary.median) &&
@@ -238,10 +319,10 @@ ResidualSummary CalculateResidualSummary(const std::vector<double> &values) {
   return summary;
 }
 
-const std::vector<double> &GetResidualValues(
+const std::vector<WeightedResidualValue> &GetResidualValues(
     const ResidualValueMap &residual_values,
     const TH1D *hist) {
-  static const std::vector<double> empty_values;
+  static const std::vector<WeightedResidualValue> empty_values;
   const auto it = residual_values.find(hist);
   if (it == residual_values.end()) {
     return empty_values;
@@ -249,22 +330,82 @@ const std::vector<double> &GetResidualValues(
   return it->second;
 }
 
+bool IsInsideHistogramRange(const TH1D *hist, double value) {
+  if (!hist || !std::isfinite(value)) {
+    return false;
+  }
+
+  const TAxis *axis = hist->GetXaxis();
+  if (!axis) {
+    return false;
+  }
+
+  return value >= axis->GetXmin() && value < axis->GetXmax();
+}
+
 void FillResidual(TH1D *hist,
                   ResidualValueMap &residual_values,
-                  double value) {
-  if (!hist || !std::isfinite(value)) {
+                  double value,
+                  double weight) {
+  if (!hist ||
+      !std::isfinite(value) ||
+      !std::isfinite(weight) ||
+      weight <= 0.) {
     return;
   }
 
-  hist->Fill(value);
-  residual_values[hist].push_back(value);
+  hist->Fill(value, weight);
+  // Keep the raw residual value for mean/median/sigma_68 calculations only
+  // when it is inside the displayed histogram range. This avoids TH1 binning
+  // effects while excluding underflow and overflow outliers from the summary
+  // statistics.
+  if (IsInsideHistogramRange(hist, value)) {
+    residual_values[hist].push_back({value, weight});
+  }
 }
 
 bool IsValidValue(double value) {
   return std::isfinite(value) && value > kNonInitializedThreshold;
 }
 
-std::vector<std::string> FindRootFiles(const std::string &input_dir) {
+std::string TrimString(const std::string &input) {
+  const std::string whitespace = " \t\n\r";
+  const std::size_t first = input.find_first_not_of(whitespace);
+  if (first == std::string::npos) {
+    return "";
+  }
+
+  const std::size_t last = input.find_last_not_of(whitespace);
+  return input.substr(first, last - first + 1);
+}
+
+std::vector<std::string> ParseInputDirectories(const char *input_dirs_arg) {
+  std::vector<std::string> input_dirs;
+  if (!input_dirs_arg) {
+    return input_dirs;
+  }
+
+  std::string arg = input_dirs_arg;
+  for (char &character : arg) {
+    if (character == ';' || character == '\n') {
+      character = ',';
+    }
+  }
+
+  std::stringstream stream(arg);
+  std::string item;
+  while (std::getline(stream, item, ',')) {
+    const std::string directory = TrimString(item);
+    if (!directory.empty()) {
+      input_dirs.push_back(directory);
+    }
+  }
+
+  return input_dirs;
+}
+
+std::vector<std::string> FindRootFilesInDirectory(
+    const std::string &input_dir) {
   std::vector<std::string> root_files;
 
   TSystemDirectory directory("input_directory", input_dir.c_str());
@@ -302,6 +443,22 @@ std::vector<std::string> FindRootFiles(const std::string &input_dir) {
   return root_files;
 }
 
+std::vector<std::string> FindRootFiles(
+    const std::vector<std::string> &input_dirs) {
+  std::vector<std::string> root_files;
+
+  for (const auto &input_dir : input_dirs) {
+    const std::vector<std::string> files =
+      FindRootFilesInDirectory(input_dir);
+    root_files.insert(root_files.end(), files.begin(), files.end());
+  }
+
+  std::sort(root_files.begin(), root_files.end());
+  root_files.erase(std::unique(root_files.begin(), root_files.end()),
+                   root_files.end());
+  return root_files;
+}
+
 template <typename T>
 bool SetVectorBranchAddress(TTree *tree,
                             const char *branch_name,
@@ -319,6 +476,229 @@ bool SetVectorBranchAddress(TTree *tree,
 template <typename T>
 bool HasIndex(const std::vector<T> *values, std::size_t index) {
   return values && index < values->size();
+}
+
+int FindPositionBin(double value, double acceptance, int n_bins) {
+  if (!std::isfinite(value) || std::abs(value) >= acceptance) {
+    return -1;
+  }
+
+  const double fraction = (value + acceptance) / (2. * acceptance);
+  int bin = static_cast<int>(std::floor(fraction * n_bins));
+  if (bin < 0) {
+    bin = 0;
+  }
+  if (bin >= n_bins) {
+    bin = n_bins - 1;
+  }
+  return bin;
+}
+
+int FindPositionBinIndex(double frost_x, double frost_y) {
+  const int bin_x = FindPositionBin(frost_x,
+                                    ACCEPTANCE_X,
+                                    kNPositionBinsX);
+  const int bin_y = FindPositionBin(frost_y,
+                                    ACCEPTANCE_Y,
+                                    kNPositionBinsY);
+  if (bin_x < 0 || bin_y < 0) {
+    return -1;
+  }
+  return bin_y * kNPositionBinsX + bin_x;
+}
+
+struct PositionBinWeights {
+  std::array<Long64_t, kNPositionBins> counts{};
+  std::array<double, kNPositionBins> weights{};
+  Long64_t total_tracks = 0;
+  int occupied_bins = 0;
+  double target_count = 0.;
+  bool enabled = true;
+
+  void Count(double frost_x, double frost_y) {
+    const int bin_index = FindPositionBinIndex(frost_x, frost_y);
+    if (bin_index < 0) {
+      return;
+    }
+
+    ++counts.at(bin_index);
+    ++total_tracks;
+  }
+
+  void Disable() {
+    enabled = false;
+    weights.fill(1.);
+  }
+
+  void CalculateWeights() {
+    enabled = true;
+    occupied_bins = 0;
+    for (const auto count : counts) {
+      if (count > 0) {
+        ++occupied_bins;
+      }
+    }
+
+    weights.fill(0.);
+    if (occupied_bins == 0) {
+      return;
+    }
+
+    target_count =
+      static_cast<double>(total_tracks) / static_cast<double>(occupied_bins);
+
+    for (std::size_t i = 0; i < counts.size(); ++i) {
+      if (counts.at(i) > 0) {
+        weights.at(i) = target_count / static_cast<double>(counts.at(i));
+      }
+    }
+  }
+
+  double GetWeight(double frost_x, double frost_y) const {
+    const int bin_index = FindPositionBinIndex(frost_x, frost_y);
+    if (bin_index < 0) {
+      return 0.;
+    }
+    if (!enabled) {
+      return 1.;
+    }
+    return weights.at(bin_index);
+  }
+};
+
+void CountPositionBinsOneFile(const std::string &file_path,
+                              SampleType sample_type,
+                              PositionBinWeights &position_weights) {
+  std::unique_ptr<TFile> file(TFile::Open(file_path.c_str(), "READ"));
+  if (!file || file->IsZombie()) {
+    std::cerr << "Warning: cannot open file for position-bin counting: "
+              << file_path << std::endl;
+    return;
+  }
+
+  auto *tree = dynamic_cast<TTree *>(file->Get("match_info"));
+  if (!tree) {
+    std::cerr << "Warning: match_info tree is missing in "
+              << file_path << std::endl;
+    return;
+  }
+
+  std::vector<int> *has_match = nullptr;
+  std::vector<int> *ninja_track_type = nullptr;
+  std::vector<double> *frost_nearest_x = nullptr;
+  std::vector<double> *frost_nearest_y = nullptr;
+  std::vector<double> *external_tangent_x = nullptr;
+  std::vector<double> *external_tangent_y = nullptr;
+
+  Int_t bsd_good_spill_flag = 0;
+  Int_t detector_flags[8] = {};
+
+  bool ok = true;
+  ok &= SetVectorBranchAddress(tree, "trackmatch_has_match", &has_match);
+  ok &= SetVectorBranchAddress(tree,
+                               "trackmatch_ninja_track_type",
+                               &ninja_track_type);
+  ok &= SetVectorBranchAddress(tree,
+                               "trackmatch_frost_nearest_x",
+                               &frost_nearest_x);
+  ok &= SetVectorBranchAddress(tree,
+                               "trackmatch_frost_nearest_y",
+                               &frost_nearest_y);
+  ok &= SetVectorBranchAddress(tree,
+                               "trackmatch_external_tangent_x",
+                               &external_tangent_x);
+  ok &= SetVectorBranchAddress(tree,
+                               "trackmatch_external_tangent_y",
+                               &external_tangent_y);
+
+  if (IsData(sample_type)) {
+    if (!tree->GetBranch("bsd_good_spill_flag")) {
+      std::cerr << "Error: required branch is missing: bsd_good_spill_flag"
+                << std::endl;
+      ok = false;
+    } else {
+      tree->SetBranchAddress("bsd_good_spill_flag", &bsd_good_spill_flag);
+    }
+
+    if (!tree->GetBranch("detector_flags")) {
+      std::cerr << "Error: required branch is missing: detector_flags"
+                << std::endl;
+      ok = false;
+    } else {
+      tree->SetBranchAddress("detector_flags", detector_flags);
+    }
+  }
+
+  if (!ok) {
+    std::cerr << "Warning: skip file for position-bin counting because "
+              << "required branches are missing: "
+              << file_path << std::endl;
+    return;
+  }
+
+  const Long64_t nentries = tree->GetEntries();
+  for (Long64_t entry = 0; entry < nentries; ++entry) {
+    tree->GetEntry(entry);
+
+    if (IsData(sample_type)) {
+      if (bsd_good_spill_flag == 0) {
+        continue;
+      }
+      if (detector_flags[0] != 1 || detector_flags[2] != 1) {
+        continue;
+      }
+    }
+
+    if (!has_match) {
+      continue;
+    }
+
+    const std::size_t ntracks = has_match->size();
+    for (std::size_t itrack = 0; itrack < ntracks; ++itrack) {
+      if (has_match->at(itrack) != 1) {
+        continue;
+      }
+
+      if (!HasIndex(ninja_track_type, itrack) ||
+          !HasIndex(frost_nearest_x, itrack) ||
+          !HasIndex(frost_nearest_y, itrack) ||
+          !HasIndex(external_tangent_x, itrack) ||
+          !HasIndex(external_tangent_y, itrack) ||
+          !IsValidValue(frost_nearest_x->at(itrack)) ||
+          !IsValidValue(frost_nearest_y->at(itrack)) ||
+          !IsValidValue(external_tangent_x->at(itrack)) ||
+          !IsValidValue(external_tangent_y->at(itrack))) {
+        continue;
+      }
+
+      if (ninja_track_type->at(itrack) != 1) {
+        continue;
+      }
+
+      const double frost_x = frost_nearest_x->at(itrack);
+      const double frost_y = frost_nearest_y->at(itrack);
+      if (std::abs(frost_x) >= ACCEPTANCE_X ||
+          std::abs(frost_y) >= ACCEPTANCE_Y) {
+        continue;
+      }
+
+      position_weights.Count(frost_x, frost_y);
+    }
+  }
+}
+
+void PrintPositionWeightSummary(const PositionBinWeights &position_weights) {
+  std::cout << "Position reweighting: "
+            << kNPositionBinsX << " x " << kNPositionBinsY
+            << " bins in |x| < " << ACCEPTANCE_X
+            << " mm, |y| < " << ACCEPTANCE_Y << " mm" << std::endl;
+  std::cout << "  total selected tracks for weighting: "
+            << position_weights.total_tracks << std::endl;
+  std::cout << "  occupied position bins: "
+            << position_weights.occupied_bins << " / "
+            << kNPositionBins << std::endl;
+  std::cout << "  target weighted entries per occupied bin: "
+            << position_weights.target_count << std::endl;
 }
 
 int FindAngleBin(double angle_deg) {
@@ -347,6 +727,31 @@ std::vector<TH1D*> MakeAngleHistograms(const char *name_prefix,
       nbins,
       xmin_mm,
       xmax_mm));
+  }
+
+  return histograms;
+}
+
+std::vector<TH1D*> MakeAngleCountHistograms(const char *name_prefix,
+                                            const char *theta_label,
+                                            const char *x_axis_title,
+                                            int min_value,
+                                            int max_value) {
+  std::vector<TH1D*> histograms;
+  histograms.reserve(kNAngleBins);
+
+  const int nbins = max_value - min_value + 1;
+  const double xmin = min_value - 0.5;
+  const double xmax = max_value + 0.5;
+
+  for (int i = 0; i < kNAngleBins; ++i) {
+    histograms.push_back(new TH1D(
+      Form("%s_angle_%02d", name_prefix, i),
+      Form("%.0f #leq #theta_{%s} < %.0f deg;%s;Number of tracks",
+           kAngleBins[i], theta_label, kAngleBins[i + 1], x_axis_title),
+      nbins,
+      xmin,
+      xmax));
   }
 
   return histograms;
@@ -401,6 +806,15 @@ void ProcessOneFile(const std::string &file_path,
                     std::vector<TH1D*> &hist_reco_truth_y_by_angle,
                     std::vector<TH2D*> &hist_correlation_x_by_angle,
                     std::vector<TH2D*> &hist_correlation_y_by_angle,
+                    TH1D *hist_num_planes_dwg_x_all,
+                    TH1D *hist_num_planes_pm_x_all,
+                    TH1D *hist_num_planes_dwg_y_all,
+                    TH1D *hist_num_planes_pm_y_all,
+                    std::vector<TH1D*> &hist_num_planes_dwg_x_by_angle,
+                    std::vector<TH1D*> &hist_num_planes_pm_x_by_angle,
+                    std::vector<TH1D*> &hist_num_planes_dwg_y_by_angle,
+                    std::vector<TH1D*> &hist_num_planes_pm_y_by_angle,
+                    const PositionBinWeights &position_weights,
                     ResidualValueMap &residual_values,
                     CorrelationStats &correlation_stats_x,
                     CorrelationStats &correlation_stats_y,
@@ -438,8 +852,8 @@ void ProcessOneFile(const std::string &file_path,
   std::vector<double> *frost_nearest_y = nullptr;
   std::vector<double> *true_frost_x = nullptr;
   std::vector<double> *true_frost_y = nullptr;
-  std::vector<double> *baby_mind_tangent_x = nullptr;
-  std::vector<double> *baby_mind_tangent_y = nullptr;
+  std::vector<double> *external_tangent_x = nullptr;
+  std::vector<double> *external_tangent_y = nullptr;
   std::vector<int> *ninja_track_type = nullptr;
 
   Int_t bsd_good_spill_flag = 0;
@@ -472,9 +886,9 @@ void ProcessOneFile(const std::string &file_path,
   ok &= SetVectorBranchAddress(
     tree, "trackmatch_frost_nearest_y", &frost_nearest_y);
   ok &= SetVectorBranchAddress(
-    tree, "trackmatch_baby_mind_tangent_x", &baby_mind_tangent_x);
+    tree, "trackmatch_external_tangent_x", &external_tangent_x);
   ok &= SetVectorBranchAddress(
-    tree, "trackmatch_baby_mind_tangent_y", &baby_mind_tangent_y);
+    tree, "trackmatch_external_tangent_y", &external_tangent_y);
   ok &= SetVectorBranchAddress(
     tree, "trackmatch_ninja_track_type", &ninja_track_type);
 
@@ -554,15 +968,22 @@ void ProcessOneFile(const std::string &file_path,
       if (!pass_position) {
         continue;
       }
-      if (!HasIndex(baby_mind_tangent_x, itrack) ||
-          !HasIndex(baby_mind_tangent_y, itrack) ||
-          !IsValidValue(baby_mind_tangent_x->at(itrack)) ||
-          !IsValidValue(baby_mind_tangent_y->at(itrack))) {
+      if (!HasIndex(external_tangent_x, itrack) ||
+          !HasIndex(external_tangent_y, itrack) ||
+          !IsValidValue(external_tangent_x->at(itrack)) ||
+          !IsValidValue(external_tangent_y->at(itrack))) {
         continue;
       }
 
-      const double tangent_x = baby_mind_tangent_x->at(itrack);
-      const double tangent_y = baby_mind_tangent_y->at(itrack);
+      const double position_weight =
+        position_weights.GetWeight(frost_nearest_x->at(itrack),
+                                   frost_nearest_y->at(itrack));
+      if (position_weight <= 0.) {
+        continue;
+      }
+
+      const double tangent_x = external_tangent_x->at(itrack);
+      const double tangent_y = external_tangent_y->at(itrack);
       const double theta_x_deg =
         std::atan(std::abs(tangent_x)) * 180.0 / TMath::Pi();
       const double theta_y_deg =
@@ -587,6 +1008,25 @@ void ProcessOneFile(const std::string &file_path,
         continue;
       }
 
+      hist_num_planes_dwg_x_all->Fill(n_dwg_x->at(itrack), position_weight);
+      hist_num_planes_pm_x_all->Fill(n_pm_x->at(itrack), position_weight);
+      hist_num_planes_dwg_y_all->Fill(n_dwg_y->at(itrack), position_weight);
+      hist_num_planes_pm_y_all->Fill(n_pm_y->at(itrack), position_weight);
+
+      if (has_angle_bin_x) {
+        hist_num_planes_dwg_x_by_angle.at(angle_bin_x)->Fill(
+          n_dwg_x->at(itrack), position_weight);
+        hist_num_planes_pm_x_by_angle.at(angle_bin_x)->Fill(
+          n_pm_x->at(itrack), position_weight);
+      }
+
+      if (has_angle_bin_y) {
+        hist_num_planes_dwg_y_by_angle.at(angle_bin_y)->Fill(
+          n_dwg_y->at(itrack), position_weight);
+        hist_num_planes_pm_y_by_angle.at(angle_bin_y)->Fill(
+          n_pm_y->at(itrack), position_weight);
+      }
+
       const bool split_x_selected =
         HasIndex(pm_only_expected_x, itrack) &&
         HasIndex(dwg_only_expected_x, itrack) &&
@@ -598,13 +1038,15 @@ void ProcessOneFile(const std::string &file_path,
           pm_only_expected_x->at(itrack) - dwg_only_expected_x->at(itrack);
         FillResidual(hist_pm_dwg_split_x,
                      residual_values,
-                     pm_minus_dwg_x);
+                     pm_minus_dwg_x,
+                     position_weight);
         ++n_tracks_pm_dwg_split_x;
 
         if (has_angle_bin_x) {
           FillResidual(hist_pm_dwg_split_x_by_angle.at(angle_bin_x),
                        residual_values,
-                       pm_minus_dwg_x);
+                       pm_minus_dwg_x,
+                     position_weight);
         }
       }
 
@@ -618,14 +1060,16 @@ void ProcessOneFile(const std::string &file_path,
         FillResidual(hist_reco_external_x,
                      residual_values,
                      frost_nearest_x->at(itrack) -
-                     external_expected_x->at(itrack));
+                     external_expected_x->at(itrack),
+                     position_weight);
         ++n_tracks_x;
 
         if (has_angle_bin_x) {
           FillResidual(hist_reco_external_x_by_angle.at(angle_bin_x),
                        residual_values,
                        frost_nearest_x->at(itrack) -
-                       external_expected_x->at(itrack));
+                       external_expected_x->at(itrack),
+                     position_weight);
         }
       }
 
@@ -636,12 +1080,14 @@ void ProcessOneFile(const std::string &file_path,
         FillResidual(hist_x,
                      residual_values,
                      external_expected_x->at(itrack) -
-                     true_frost_x->at(itrack));
+                     true_frost_x->at(itrack),
+                     position_weight);
         if (has_angle_bin_x) {
           FillResidual(hist_external_truth_x_by_angle.at(angle_bin_x),
                        residual_values,
                        external_expected_x->at(itrack) -
-                       true_frost_x->at(itrack));
+                       true_frost_x->at(itrack),
+                     position_weight);
         }
       }
 
@@ -658,18 +1104,28 @@ void ProcessOneFile(const std::string &file_path,
 
         FillResidual(hist_reco_truth_x,
                      residual_values,
-                     reco_minus_true_x);
-        hist_correlation_x->Fill(external_minus_true_x, reco_minus_true_x);
-        correlation_stats_x.Fill(external_minus_true_x, reco_minus_true_x);
+                     reco_minus_true_x,
+                     position_weight);
+        hist_correlation_x->Fill(external_minus_true_x,
+                                 reco_minus_true_x,
+                                 position_weight);
+        correlation_stats_x.Fill(external_minus_true_x,
+                                 reco_minus_true_x,
+                                 position_weight);
 
         if (has_angle_bin_x) {
           FillResidual(hist_reco_truth_x_by_angle.at(angle_bin_x),
                        residual_values,
-                       reco_minus_true_x);
+                       reco_minus_true_x,
+                     position_weight);
           hist_correlation_x_by_angle.at(angle_bin_x)->Fill(
-            external_minus_true_x, reco_minus_true_x);
+            external_minus_true_x,
+            reco_minus_true_x,
+            position_weight);
           correlation_stats_x_by_angle.at(angle_bin_x).Fill(
-            external_minus_true_x, reco_minus_true_x);
+            external_minus_true_x,
+            reco_minus_true_x,
+            position_weight);
         }
       }
 
@@ -684,13 +1140,15 @@ void ProcessOneFile(const std::string &file_path,
           pm_only_expected_y->at(itrack) - dwg_only_expected_y->at(itrack);
         FillResidual(hist_pm_dwg_split_y,
                      residual_values,
-                     pm_minus_dwg_y);
+                     pm_minus_dwg_y,
+                     position_weight);
         ++n_tracks_pm_dwg_split_y;
 
         if (has_angle_bin_y) {
           FillResidual(hist_pm_dwg_split_y_by_angle.at(angle_bin_y),
                        residual_values,
-                       pm_minus_dwg_y);
+                       pm_minus_dwg_y,
+                     position_weight);
         }
       }
 
@@ -704,14 +1162,16 @@ void ProcessOneFile(const std::string &file_path,
         FillResidual(hist_reco_external_y,
                      residual_values,
                      frost_nearest_y->at(itrack) -
-                     external_expected_y->at(itrack));
+                     external_expected_y->at(itrack),
+                     position_weight);
         ++n_tracks_y;
 
         if (has_angle_bin_y) {
           FillResidual(hist_reco_external_y_by_angle.at(angle_bin_y),
                        residual_values,
                        frost_nearest_y->at(itrack) -
-                       external_expected_y->at(itrack));
+                       external_expected_y->at(itrack),
+                     position_weight);
         }
       }
 
@@ -722,13 +1182,15 @@ void ProcessOneFile(const std::string &file_path,
         FillResidual(hist_y,
                      residual_values,
                      external_expected_y->at(itrack) -
-                     true_frost_y->at(itrack));
+                     true_frost_y->at(itrack),
+                     position_weight);
 
         if (has_angle_bin_y) {
           FillResidual(hist_external_truth_y_by_angle.at(angle_bin_y),
                        residual_values,
                        external_expected_y->at(itrack) -
-                       true_frost_y->at(itrack));
+                       true_frost_y->at(itrack),
+                     position_weight);
         }
       }
 
@@ -745,36 +1207,46 @@ void ProcessOneFile(const std::string &file_path,
 
         FillResidual(hist_reco_truth_y,
                      residual_values,
-                     reco_minus_true_y);
-        hist_correlation_y->Fill(external_minus_true_y, reco_minus_true_y);
-        correlation_stats_y.Fill(external_minus_true_y, reco_minus_true_y);
+                     reco_minus_true_y,
+                     position_weight);
+        hist_correlation_y->Fill(external_minus_true_y,
+                                 reco_minus_true_y,
+                                 position_weight);
+        correlation_stats_y.Fill(external_minus_true_y,
+                                 reco_minus_true_y,
+                                 position_weight);
 
         if (has_angle_bin_y) {
           FillResidual(hist_reco_truth_y_by_angle.at(angle_bin_y),
                        residual_values,
-                       reco_minus_true_y);
+                       reco_minus_true_y,
+                     position_weight);
           hist_correlation_y_by_angle.at(angle_bin_y)->Fill(
-            external_minus_true_y, reco_minus_true_y);
+            external_minus_true_y,
+            reco_minus_true_y,
+            position_weight);
           correlation_stats_y_by_angle.at(angle_bin_y).Fill(
-            external_minus_true_y, reco_minus_true_y);
+            external_minus_true_y,
+            reco_minus_true_y,
+            position_weight);
         }
       }
     }
   }
 }
 
-void DrawCentral68Text(const std::vector<double> &values) {
+void DrawCentral68Text(const std::vector<WeightedResidualValue> &values) {
   const ResidualSummary summary = CalculateResidualSummary(values);
   if (!summary.valid) {
     return;
   }
 
-  auto *text = new TPaveText(0.6, 0.40, 0.85, 0.50, "NDC");
+  auto *text = new TPaveText(0.7, 0.40, 0.95, 0.50, "NDC");
   text->SetFillColor(0);
   text->SetFillStyle(0);
   text->SetBorderSize(0);
   text->SetTextAlign(12);
-  text->SetTextSize(0.035);
+  text->SetTextSize(0.03);
   text->AddText(Form("median = %.3f mm", summary.median));
   text->AddText(Form("#sigma_{68} = %.3f mm", summary.sigma68));
   text->Draw("same");
@@ -807,6 +1279,38 @@ void DrawHistogram(TH1D *hist,
   }
 
   DrawCentral68Text(GetResidualValues(residual_values, hist));
+}
+
+void DrawPlaneCountHistogram(TH1D *hist) {
+  gPad->SetLeftMargin(0.15);
+  gPad->SetRightMargin(0.05);
+  gPad->SetBottomMargin(0.13);
+
+  hist->SetLineWidth(2);
+  hist->GetXaxis()->SetTitleOffset(1.15);
+  hist->GetYaxis()->SetTitleOffset(1.55);
+  hist->Draw("hist");
+}
+
+void DrawPlaneCountPage(TCanvas &canvas,
+                        TH1D *hist_dwg_x,
+                        TH1D *hist_pm_x,
+                        TH1D *hist_dwg_y,
+                        TH1D *hist_pm_y) {
+  canvas.Clear();
+  canvas.Divide(2, 2);
+
+  canvas.cd(1);
+  DrawPlaneCountHistogram(hist_dwg_x);
+
+  canvas.cd(2);
+  DrawPlaneCountHistogram(hist_dwg_y);
+
+  canvas.cd(3);
+  DrawPlaneCountHistogram(hist_pm_x);
+
+  canvas.cd(4);
+  DrawPlaneCountHistogram(hist_pm_y);
 }
 
 void DrawTwoPanelPage(TCanvas &canvas,
@@ -843,6 +1347,7 @@ void DrawCorrelationText(const CorrelationStats &stats) {
   text->SetTextAlign(12);
   text->SetTextSize(0.032);
   text->AddText(Form("N = %lld", stats.n));
+  text->AddText(Form("#Sigma w = %.1f", stats.sum_weight));
   text->AddText(Form("Cov(E,R) = %.3f mm^{2}", covariance));
   text->AddText(Form("#rho(E,R) = %.3f", correlation));
   text->Draw("same");
@@ -888,6 +1393,48 @@ void PrintAnglePages(TCanvas &canvas,
                      hist_x_by_angle.at(i),
                      hist_y_by_angle.at(i),
                      residual_values);
+
+    if (close_pdf && i == kNAngleBins - 1) {
+      canvas.Print(pdf_close);
+    } else {
+      canvas.Print(output_pdf);
+    }
+  }
+}
+
+void PrintPlaneCountPages(
+    TCanvas &canvas,
+    const char *output_pdf,
+    TH1D *hist_num_planes_dwg_x_all,
+    TH1D *hist_num_planes_pm_x_all,
+    TH1D *hist_num_planes_dwg_y_all,
+    TH1D *hist_num_planes_pm_y_all,
+    const std::vector<TH1D*> &hist_num_planes_dwg_x_by_angle,
+    const std::vector<TH1D*> &hist_num_planes_pm_x_by_angle,
+    const std::vector<TH1D*> &hist_num_planes_dwg_y_by_angle,
+    const std::vector<TH1D*> &hist_num_planes_pm_y_by_angle,
+    bool close_pdf = false) {
+  TString pdf_close = output_pdf;
+  pdf_close += ")";
+
+  DrawPlaneCountPage(canvas,
+                     hist_num_planes_dwg_x_all,
+                     hist_num_planes_pm_x_all,
+                     hist_num_planes_dwg_y_all,
+                     hist_num_planes_pm_y_all);
+
+  if (close_pdf && kNAngleBins == 0) {
+    canvas.Print(pdf_close);
+  } else {
+    canvas.Print(output_pdf);
+  }
+
+  for (int i = 0; i < kNAngleBins; ++i) {
+    DrawPlaneCountPage(canvas,
+                       hist_num_planes_dwg_x_by_angle.at(i),
+                       hist_num_planes_pm_x_by_angle.at(i),
+                       hist_num_planes_dwg_y_by_angle.at(i),
+                       hist_num_planes_pm_y_by_angle.at(i));
 
     if (close_pdf && i == kNAngleBins - 1) {
       canvas.Print(pdf_close);
@@ -945,7 +1492,7 @@ void WriteResidualSummaryRow(std::ostream &out,
                              SampleType sample_type,
                              const char *quantity_name,
                              const char *angle_bin_label,
-                             const std::vector<double> &values) {
+                             const std::vector<WeightedResidualValue> &values) {
   const ResidualSummary summary = CalculateResidualSummary(values);
 
   out << SampleTypeLabel(sample_type) << ','
@@ -953,12 +1500,13 @@ void WriteResidualSummaryRow(std::ostream &out,
       << angle_bin_label << ',';
 
   if (!summary.valid) {
-    out << 0 << ",,,,," << '\n';
+    out << 0 << ",,,,,," << '\n';
     return;
   }
 
   out << summary.n << ','
-      << std::setprecision(10) << summary.mean << ','
+      << std::setprecision(10) << summary.sum_weight << ','
+      << summary.mean << ','
       << summary.median << ','
       << summary.sigma68 << ','
       << summary.q16 << ','
@@ -1014,7 +1562,7 @@ void WriteResidualSummaryLog(
     return;
   }
 
-  log << "sample_type,quantity,angle_bin,n,mean_mm,median_mm,"
+  log << "sample_type,quantity,angle_bin,n,sum_weight,mean_mm,median_mm,"
       << "sigma68_mm,q16_mm,q84_mm" << '\n';
 
   if (IsMonteCarlo(sample_type)) {
@@ -1112,30 +1660,66 @@ void WriteResidualSummaryLog(
 
 }  // namespace
 
-// void DrawExternalFrostTruthResidual(const char *input_dir="/group/nu/ninja/work/otani/FROSTReconData/Artificial_sandmuonMC/6-TrackMatch_externalfit_PMandDWG",
+// void DrawFrostExternalFitDiagnostics(const char *input_dirs="/group/nu/ninja/work/otani/FROSTReconData/Artificial_sandmuonMC_retry/6-TrackMatch_externalfit_PMandDWG,/group/nu/ninja/work/otani/FROSTReconData/Artificial_sandmuonMC/6-TrackMatch_externalfit_PMandDWG",
+//                                     const char *output_pdf="/group/nu/ninja/work/otani/FROSTReconData/Artificial_sandmuonMC_retry/6-TrackMatch_externalfit_PMandDWG/external_fit_diagnostics.pdf",
+//                                     const char *sample_type_arg="mc",
+//                                     int nbins = 200,
+//                                     double xmin_mm = -50.,
+//                                     double xmax_mm = 50.,
+//                                     const char *output_log="",
+//                                     bool use_position_reweighting = true) {
+// void DrawFrostExternalFitDiagnostics(const char *input_dirs="/group/nu/ninja/work/otani/FROSTReconData/Artificial_sandmuonMC/6-TrackMatch_externalfit_PMandDWG",
 //                                     const char *output_pdf="/group/nu/ninja/work/otani/FROSTReconData/Artificial_sandmuonMC/6-TrackMatch_externalfit_PMandDWG/external_fit_diagnostics.pdf",
 //                                     const char *sample_type_arg="mc",
 //                                     int nbins = 200,
 //                                     double xmin_mm = -50.,
 //                                     double xmax_mm = 50.,
-//                                     const char *output_log="") {
-void DrawExternalFrostTruthResidual(const char *input_dir="/group/nu/ninja/work/otani/FROSTReconData/BM_FROST_BMWGPM/2-rootfile_after_TrackMatch_externalfit_PMandDWG",
-                                    const char *output_pdf="/group/nu/ninja/work/otani/FROSTReconData/BM_FROST_BMWGPM/2-rootfile_after_TrackMatch_externalfit_PMandDWG/external_fit_diagnostics.pdf",
+//                                     const char *output_log="",
+//                                     bool use_position_reweighting = true) {
+void DrawFrostExternalFitDiagnostics(const char *input_dirs="/group/nu/ninja/work/otani/FROSTReconData/BM_FROST_BMWGPM/2-rootfile_after_TrackMatch_externalfit_PMandDWG_shift2",
+                                    const char *output_pdf="/group/nu/ninja/work/otani/FROSTReconData/BM_FROST_BMWGPM/2-rootfile_after_TrackMatch_externalfit_PMandDWG_shift2/external_fit_diagnostics.pdf",
                                     const char *sample_type_arg="data",
                                     int nbins = 200,
                                     double xmin_mm = -50.,
                                     double xmax_mm = 50.,
-                                    const char *output_log="") {
+                                    const char *output_log="",
+                                    bool use_position_reweighting = true) {
+  TH1::SetDefaultSumw2(kTRUE);
+
   gStyle->SetOptStat(1110);
   gStyle->SetOptFit(1111);
 
   const SampleType sample_type = ParseSampleType(sample_type_arg);
 
-  const std::vector<std::string> root_files = FindRootFiles(input_dir);
-  if (root_files.empty()) {
-    std::cerr << "Error: no .root files found in directory: "
-              << input_dir << std::endl;
+  const std::vector<std::string> input_dir_list =
+    ParseInputDirectories(input_dirs);
+  if (input_dir_list.empty()) {
+    std::cerr << "Error: no input directory is specified" << std::endl;
     return;
+  }
+
+  std::cout << "Input directories:" << std::endl;
+  for (const auto &input_dir : input_dir_list) {
+    std::cout << "  " << input_dir << std::endl;
+  }
+
+  const std::vector<std::string> root_files = FindRootFiles(input_dir_list);
+  if (root_files.empty()) {
+    std::cerr << "Error: no .root files found in the input directories"
+              << std::endl;
+    return;
+  }
+
+  PositionBinWeights position_weights;
+  if (use_position_reweighting) {
+    for (const auto &file_path : root_files) {
+      CountPositionBinsOneFile(file_path, sample_type, position_weights);
+    }
+    position_weights.CalculateWeights();
+    PrintPositionWeightSummary(position_weights);
+  } else {
+    position_weights.Disable();
+    std::cout << "Position reweighting: disabled" << std::endl;
   }
 
   auto *hist_x = new TH1D(
@@ -1296,6 +1880,62 @@ void DrawExternalFrostTruthResidual(const char *input_dir="/group/nu/ninja/work/
     xmin_mm,
     xmax_mm);
 
+  auto *hist_num_planes_dwg_x_all = new TH1D(
+    "hist_num_planes_dwg_x_all",
+    "All angles;N_{plane}^{DWG,x};Number of tracks",
+    10 - NHIT_DWG_X + 1,
+    NHIT_DWG_X - 0.5,
+    10.5);
+
+  auto *hist_num_planes_pm_x_all = new TH1D(
+    "hist_num_planes_pm_x_all",
+    "All angles;N_{plane}^{PM,x};Number of tracks",
+    25 - NHIT_PM_X + 1,
+    NHIT_PM_X - 0.5,
+    25.5);
+
+  auto *hist_num_planes_dwg_y_all = new TH1D(
+    "hist_num_planes_dwg_y_all",
+    "All angles;N_{plane}^{DWG,y};Number of tracks",
+    10 - NHIT_DWG_Y + 1,
+    NHIT_DWG_Y - 0.5,
+    10.5);
+
+  auto *hist_num_planes_pm_y_all = new TH1D(
+    "hist_num_planes_pm_y_all",
+    "All angles;N_{plane}^{PM,y};Number of tracks",
+    25 - NHIT_PM_Y + 1,
+    NHIT_PM_Y - 0.5,
+    25.5);
+
+  auto hist_num_planes_dwg_x_by_angle = MakeAngleCountHistograms(
+    "hist_num_planes_dwg_x",
+    "x",
+    "N_{plane}^{DWG,x}",
+    NHIT_DWG_X,
+    10);
+
+  auto hist_num_planes_pm_x_by_angle = MakeAngleCountHistograms(
+    "hist_num_planes_pm_x",
+    "x",
+    "N_{plane}^{PM,x}",
+    NHIT_PM_X,
+    25);
+
+  auto hist_num_planes_dwg_y_by_angle = MakeAngleCountHistograms(
+    "hist_num_planes_dwg_y",
+    "y",
+    "N_{plane}^{DWG,y}",
+    NHIT_DWG_Y,
+    10);
+
+  auto hist_num_planes_pm_y_by_angle = MakeAngleCountHistograms(
+    "hist_num_planes_pm_y",
+    "y",
+    "N_{plane}^{PM,y}",
+    NHIT_PM_Y,
+    25);
+
   ResidualValueMap residual_values;
 
   CorrelationStats correlation_stats_x;
@@ -1332,6 +1972,15 @@ void DrawExternalFrostTruthResidual(const char *input_dir="/group/nu/ninja/work/
                    hist_reco_truth_y_by_angle,
                    hist_correlation_x_by_angle,
                    hist_correlation_y_by_angle,
+                   hist_num_planes_dwg_x_all,
+                   hist_num_planes_pm_x_all,
+                   hist_num_planes_dwg_y_all,
+                   hist_num_planes_pm_y_all,
+                   hist_num_planes_dwg_x_by_angle,
+                   hist_num_planes_pm_x_by_angle,
+                   hist_num_planes_dwg_y_by_angle,
+                   hist_num_planes_pm_y_by_angle,
+                   position_weights,
                    residual_values,
                    correlation_stats_x,
                    correlation_stats_y,
@@ -1472,7 +2121,19 @@ void DrawExternalFrostTruthResidual(const char *input_dir="/group/nu/ninja/work/
                                hist_correlation_y_by_angle,
                                correlation_stats_x_by_angle,
                                correlation_stats_y_by_angle,
-                               true);
+                               false);
+
+    PrintPlaneCountPages(canvas,
+                         output_pdf,
+                         hist_num_planes_dwg_x_all,
+                         hist_num_planes_pm_x_all,
+                         hist_num_planes_dwg_y_all,
+                         hist_num_planes_pm_y_all,
+                         hist_num_planes_dwg_x_by_angle,
+                         hist_num_planes_pm_x_by_angle,
+                         hist_num_planes_dwg_y_by_angle,
+                         hist_num_planes_pm_y_by_angle,
+                         true);
   } else {
     DrawTwoPanelPage(canvas, hist_reco_external_x, hist_reco_external_y, residual_values);
     canvas.Print(pdf_open);
@@ -1491,6 +2152,18 @@ void DrawExternalFrostTruthResidual(const char *input_dir="/group/nu/ninja/work/
                     hist_pm_dwg_split_x_by_angle,
                     hist_pm_dwg_split_y_by_angle,
                     residual_values,
-                    true);
+                    false);
+
+    PrintPlaneCountPages(canvas,
+                         output_pdf,
+                         hist_num_planes_dwg_x_all,
+                         hist_num_planes_pm_x_all,
+                         hist_num_planes_dwg_y_all,
+                         hist_num_planes_pm_y_all,
+                         hist_num_planes_dwg_x_by_angle,
+                         hist_num_planes_pm_x_by_angle,
+                         hist_num_planes_dwg_y_by_angle,
+                         hist_num_planes_pm_y_by_angle,
+                         true);
   }
 }

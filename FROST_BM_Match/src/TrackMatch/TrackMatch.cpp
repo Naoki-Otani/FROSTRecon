@@ -216,6 +216,16 @@ struct TrackMatchRow {
   Double_t external_pm_only_chi2_y = B2_NON_INITIALIZED_VALUE;
   Int_t external_pm_only_ndof_x = B2_NON_INITIALIZED_VALUE;
   Int_t external_pm_only_ndof_y = B2_NON_INITIALIZED_VALUE;
+  Int_t external_pm_only_num_hits_x = 0;
+  Int_t external_pm_only_num_hits_y = 0;
+  Int_t external_pm_only_num_single_hit_planes_x = 0;
+  Int_t external_pm_only_num_single_hit_planes_y = 0;
+  Int_t external_pm_only_num_multi_hit_planes_x = 0;
+  Int_t external_pm_only_num_multi_hit_planes_y = 0;
+  Int_t external_pm_only_max_hits_per_plane_x = 0;
+  Int_t external_pm_only_max_hits_per_plane_y = 0;
+  Int_t external_pm_only_num_adjacent_hit_planes_x = 0;
+  Int_t external_pm_only_num_adjacent_hit_planes_y = 0;
   Double_t external_dwg_only_expected_x = B2_NON_INITIALIZED_VALUE;
   Double_t external_dwg_only_expected_y = B2_NON_INITIALIZED_VALUE;
   Double_t external_dwg_only_tangent_x = B2_NON_INITIALIZED_VALUE;
@@ -242,6 +252,7 @@ struct ExternalFitGroupKey {
   int view = -1;
   int plane = -1;
 
+
   bool operator<(const ExternalFitGroupKey &rhs) const {
     return std::tie(detector_id, view, plane) <
            std::tie(rhs.detector_id, rhs.view, rhs.plane);
@@ -252,6 +263,7 @@ struct ExternalFitRawHit {
   int detector_id = -1;
   int view = -1;
   int plane = -1;
+  int slot = -1;
   double position = B2_NON_INITIALIZED_VALUE;
   double z = B2_NON_INITIALIZED_VALUE;
   double position_error = B2_NON_INITIALIZED_VALUE;
@@ -278,6 +290,19 @@ struct ExternalFitOneViewResult {
   int ndof = B2_NON_INITIALIZED_VALUE;
 };
 
+struct PmPlaneMultiplicitySummary {
+  int n_hits_x = 0;
+  int n_hits_y = 0;
+  int n_single_hit_planes_x = 0;
+  int n_single_hit_planes_y = 0;
+  int n_multi_hit_planes_x = 0;
+  int n_multi_hit_planes_y = 0;
+  int max_hits_per_plane_x = 0;
+  int max_hits_per_plane_y = 0;
+  int n_adjacent_hit_planes_x = 0;
+  int n_adjacent_hit_planes_y = 0;
+};
+
 struct ExternalTrackFitResult {
   ExternalFitOneViewResult x_fit;
   ExternalFitOneViewResult y_fit;
@@ -287,6 +312,7 @@ struct ExternalTrackFitResult {
   int num_planes_proton_module_y = 0;
   int num_planes_downstream_wagasci_x = 0;
   int num_planes_downstream_wagasci_y = 0;
+  PmPlaneMultiplicitySummary pm_multiplicity;
 };
 
 struct ExternalTrackFitSet {
@@ -1109,6 +1135,87 @@ double UniformSigmaFromInterval(double min_value, double max_value) {
   return width / std::sqrt(12.);
 }
 
+void UpdatePmPlaneMultiplicityForView(
+    const std::vector<ExternalFitRawHit> &raw_hits,
+    int view,
+    int &n_hits,
+    int &n_single_hit_planes,
+    int &n_multi_hit_planes,
+    int &max_hits_per_plane,
+    int &n_adjacent_hit_planes) {
+  std::map<int, std::vector<int>> slots_by_plane;
+
+  for (const auto &hit : raw_hits) {
+    if (hit.detector_id != B2Detector::kProtonModule) {
+      continue;
+    }
+    if (hit.view != view) {
+      continue;
+    }
+    slots_by_plane[hit.plane].push_back(hit.slot);
+  }
+
+  n_hits = 0;
+  n_single_hit_planes = 0;
+  n_multi_hit_planes = 0;
+  max_hits_per_plane = 0;
+  n_adjacent_hit_planes = 0;
+
+  for (auto &entry : slots_by_plane) {
+    auto &slots = entry.second;
+    std::sort(slots.begin(), slots.end());
+    slots.erase(std::unique(slots.begin(), slots.end()), slots.end());
+
+    const int multiplicity = static_cast<int>(slots.size());
+    if (multiplicity <= 0) {
+      continue;
+    }
+
+    n_hits += multiplicity;
+    max_hits_per_plane = std::max(max_hits_per_plane, multiplicity);
+
+    if (multiplicity == 1) {
+      ++n_single_hit_planes;
+    } else {
+      ++n_multi_hit_planes;
+    }
+
+    bool has_adjacent_pair = false;
+    for (std::size_t i = 1; i < slots.size(); ++i) {
+      if (slots.at(i) == slots.at(i - 1) + 1) {
+        has_adjacent_pair = true;
+        break;
+      }
+    }
+    if (has_adjacent_pair) {
+      ++n_adjacent_hit_planes;
+    }
+  }
+}
+
+PmPlaneMultiplicitySummary CountPmPlaneMultiplicity(
+    const std::vector<ExternalFitRawHit> &raw_hits) {
+  PmPlaneMultiplicitySummary summary;
+
+  UpdatePmPlaneMultiplicityForView(raw_hits,
+                                   B2View::kTopView,
+                                   summary.n_hits_x,
+                                   summary.n_single_hit_planes_x,
+                                   summary.n_multi_hit_planes_x,
+                                   summary.max_hits_per_plane_x,
+                                   summary.n_adjacent_hit_planes_x);
+
+  UpdatePmPlaneMultiplicityForView(raw_hits,
+                                   B2View::kSideView,
+                                   summary.n_hits_y,
+                                   summary.n_single_hit_planes_y,
+                                   summary.n_multi_hit_planes_y,
+                                   summary.max_hits_per_plane_y,
+                                   summary.n_adjacent_hit_planes_y);
+
+  return summary;
+}
+
 void IncrementExternalPlaneCount(ExternalTrackFitResult &result,
                                  int detector_id,
                                  int view) {
@@ -1201,6 +1308,7 @@ std::vector<ExternalFitRawHit> CollectExternalFitRawHits(
       raw_hit.detector_id = detector_id;
       raw_hit.view = view;
       raw_hit.plane = plane;
+      raw_hit.slot = static_cast<int>(slot);
       raw_hit.z = frost_position.Z();
       // B2Dimension::GetError() gives the half size of the segment.
       // Store it here as the geometrical half width; it is converted to
@@ -1358,6 +1466,8 @@ ExternalTrackFitResult FitExternalTrackToFrost(
   const std::vector<ExternalFitRawHit> raw_hits =
     CollectExternalFitRawHits(
       track, datatype, dimension, detector_selection, position_shift);
+  result.pm_multiplicity = CountPmPlaneMultiplicity(raw_hits);
+
   const std::vector<ExternalFitPoint> fit_points =
     BuildExternalFitPoints(raw_hits);
 
@@ -2202,6 +2312,27 @@ int main(int argc, char *argv[]) {
               row.external_pm_only_ndof_x,
               row.external_pm_only_ndof_y);
 
+            row.external_pm_only_num_hits_x =
+              external_fit_set.proton_module_only.pm_multiplicity.n_hits_x;
+            row.external_pm_only_num_hits_y =
+              external_fit_set.proton_module_only.pm_multiplicity.n_hits_y;
+            row.external_pm_only_num_single_hit_planes_x =
+              external_fit_set.proton_module_only.pm_multiplicity.n_single_hit_planes_x;
+            row.external_pm_only_num_single_hit_planes_y =
+              external_fit_set.proton_module_only.pm_multiplicity.n_single_hit_planes_y;
+            row.external_pm_only_num_multi_hit_planes_x =
+              external_fit_set.proton_module_only.pm_multiplicity.n_multi_hit_planes_x;
+            row.external_pm_only_num_multi_hit_planes_y =
+              external_fit_set.proton_module_only.pm_multiplicity.n_multi_hit_planes_y;
+            row.external_pm_only_max_hits_per_plane_x =
+              external_fit_set.proton_module_only.pm_multiplicity.max_hits_per_plane_x;
+            row.external_pm_only_max_hits_per_plane_y =
+              external_fit_set.proton_module_only.pm_multiplicity.max_hits_per_plane_y;
+            row.external_pm_only_num_adjacent_hit_planes_x =
+              external_fit_set.proton_module_only.pm_multiplicity.n_adjacent_hit_planes_x;
+            row.external_pm_only_num_adjacent_hit_planes_y =
+              external_fit_set.proton_module_only.pm_multiplicity.n_adjacent_hit_planes_y;
+
             FillRowExternalFitResult(
               external_fit_set.downstream_wagasci_only,
               row.external_dwg_only_expected_x,
@@ -2369,6 +2500,16 @@ int main(int argc, char *argv[]) {
     std::vector<Double_t> trackmatch_external_pm_only_chi2_y;
     std::vector<Int_t> trackmatch_external_pm_only_ndof_x;
     std::vector<Int_t> trackmatch_external_pm_only_ndof_y;
+    std::vector<Int_t> trackmatch_external_pm_only_num_hits_x;
+    std::vector<Int_t> trackmatch_external_pm_only_num_hits_y;
+    std::vector<Int_t> trackmatch_external_pm_only_num_single_hit_planes_x;
+    std::vector<Int_t> trackmatch_external_pm_only_num_single_hit_planes_y;
+    std::vector<Int_t> trackmatch_external_pm_only_num_multi_hit_planes_x;
+    std::vector<Int_t> trackmatch_external_pm_only_num_multi_hit_planes_y;
+    std::vector<Int_t> trackmatch_external_pm_only_max_hits_per_plane_x;
+    std::vector<Int_t> trackmatch_external_pm_only_max_hits_per_plane_y;
+    std::vector<Int_t> trackmatch_external_pm_only_num_adjacent_hit_planes_x;
+    std::vector<Int_t> trackmatch_external_pm_only_num_adjacent_hit_planes_y;
     std::vector<Double_t> trackmatch_external_dwg_only_expected_x;
     std::vector<Double_t> trackmatch_external_dwg_only_expected_y;
     std::vector<Double_t> trackmatch_external_dwg_only_tangent_x;
@@ -2454,6 +2595,26 @@ int main(int argc, char *argv[]) {
                            &trackmatch_external_pm_only_ndof_x);
     match_info_out->Branch("trackmatch_external_pm_only_ndof_y",
                            &trackmatch_external_pm_only_ndof_y);
+    match_info_out->Branch("trackmatch_external_pm_only_num_hits_x",
+                           &trackmatch_external_pm_only_num_hits_x);
+    match_info_out->Branch("trackmatch_external_pm_only_num_hits_y",
+                           &trackmatch_external_pm_only_num_hits_y);
+    match_info_out->Branch("trackmatch_external_pm_only_num_single_hit_planes_x",
+                           &trackmatch_external_pm_only_num_single_hit_planes_x);
+    match_info_out->Branch("trackmatch_external_pm_only_num_single_hit_planes_y",
+                           &trackmatch_external_pm_only_num_single_hit_planes_y);
+    match_info_out->Branch("trackmatch_external_pm_only_num_multi_hit_planes_x",
+                           &trackmatch_external_pm_only_num_multi_hit_planes_x);
+    match_info_out->Branch("trackmatch_external_pm_only_num_multi_hit_planes_y",
+                           &trackmatch_external_pm_only_num_multi_hit_planes_y);
+    match_info_out->Branch("trackmatch_external_pm_only_max_hits_per_plane_x",
+                           &trackmatch_external_pm_only_max_hits_per_plane_x);
+    match_info_out->Branch("trackmatch_external_pm_only_max_hits_per_plane_y",
+                           &trackmatch_external_pm_only_max_hits_per_plane_y);
+    match_info_out->Branch("trackmatch_external_pm_only_num_adjacent_hit_planes_x",
+                           &trackmatch_external_pm_only_num_adjacent_hit_planes_x);
+    match_info_out->Branch("trackmatch_external_pm_only_num_adjacent_hit_planes_y",
+                           &trackmatch_external_pm_only_num_adjacent_hit_planes_y);
     match_info_out->Branch("trackmatch_external_dwg_only_expected_x",
                            &trackmatch_external_dwg_only_expected_x);
     match_info_out->Branch("trackmatch_external_dwg_only_expected_y",
@@ -2550,6 +2711,16 @@ int main(int argc, char *argv[]) {
       trackmatch_external_pm_only_chi2_y.clear();
       trackmatch_external_pm_only_ndof_x.clear();
       trackmatch_external_pm_only_ndof_y.clear();
+      trackmatch_external_pm_only_num_hits_x.clear();
+      trackmatch_external_pm_only_num_hits_y.clear();
+      trackmatch_external_pm_only_num_single_hit_planes_x.clear();
+      trackmatch_external_pm_only_num_single_hit_planes_y.clear();
+      trackmatch_external_pm_only_num_multi_hit_planes_x.clear();
+      trackmatch_external_pm_only_num_multi_hit_planes_y.clear();
+      trackmatch_external_pm_only_max_hits_per_plane_x.clear();
+      trackmatch_external_pm_only_max_hits_per_plane_y.clear();
+      trackmatch_external_pm_only_num_adjacent_hit_planes_x.clear();
+      trackmatch_external_pm_only_num_adjacent_hit_planes_y.clear();
       trackmatch_external_dwg_only_expected_x.clear();
       trackmatch_external_dwg_only_expected_y.clear();
       trackmatch_external_dwg_only_tangent_x.clear();
@@ -2629,6 +2800,16 @@ int main(int argc, char *argv[]) {
       trackmatch_external_pm_only_chi2_y.reserve(rows.size());
       trackmatch_external_pm_only_ndof_x.reserve(rows.size());
       trackmatch_external_pm_only_ndof_y.reserve(rows.size());
+      trackmatch_external_pm_only_num_hits_x.reserve(rows.size());
+      trackmatch_external_pm_only_num_hits_y.reserve(rows.size());
+      trackmatch_external_pm_only_num_single_hit_planes_x.reserve(rows.size());
+      trackmatch_external_pm_only_num_single_hit_planes_y.reserve(rows.size());
+      trackmatch_external_pm_only_num_multi_hit_planes_x.reserve(rows.size());
+      trackmatch_external_pm_only_num_multi_hit_planes_y.reserve(rows.size());
+      trackmatch_external_pm_only_max_hits_per_plane_x.reserve(rows.size());
+      trackmatch_external_pm_only_max_hits_per_plane_y.reserve(rows.size());
+      trackmatch_external_pm_only_num_adjacent_hit_planes_x.reserve(rows.size());
+      trackmatch_external_pm_only_num_adjacent_hit_planes_y.reserve(rows.size());
       trackmatch_external_dwg_only_expected_x.reserve(rows.size());
       trackmatch_external_dwg_only_expected_y.reserve(rows.size());
       trackmatch_external_dwg_only_tangent_x.reserve(rows.size());
@@ -2693,6 +2874,26 @@ int main(int argc, char *argv[]) {
           row.external_pm_only_ndof_x);
         trackmatch_external_pm_only_ndof_y.push_back(
           row.external_pm_only_ndof_y);
+        trackmatch_external_pm_only_num_hits_x.push_back(
+          row.external_pm_only_num_hits_x);
+        trackmatch_external_pm_only_num_hits_y.push_back(
+          row.external_pm_only_num_hits_y);
+        trackmatch_external_pm_only_num_single_hit_planes_x.push_back(
+          row.external_pm_only_num_single_hit_planes_x);
+        trackmatch_external_pm_only_num_single_hit_planes_y.push_back(
+          row.external_pm_only_num_single_hit_planes_y);
+        trackmatch_external_pm_only_num_multi_hit_planes_x.push_back(
+          row.external_pm_only_num_multi_hit_planes_x);
+        trackmatch_external_pm_only_num_multi_hit_planes_y.push_back(
+          row.external_pm_only_num_multi_hit_planes_y);
+        trackmatch_external_pm_only_max_hits_per_plane_x.push_back(
+          row.external_pm_only_max_hits_per_plane_x);
+        trackmatch_external_pm_only_max_hits_per_plane_y.push_back(
+          row.external_pm_only_max_hits_per_plane_y);
+        trackmatch_external_pm_only_num_adjacent_hit_planes_x.push_back(
+          row.external_pm_only_num_adjacent_hit_planes_x);
+        trackmatch_external_pm_only_num_adjacent_hit_planes_y.push_back(
+          row.external_pm_only_num_adjacent_hit_planes_y);
         trackmatch_external_dwg_only_expected_x.push_back(
           row.external_dwg_only_expected_x);
         trackmatch_external_dwg_only_expected_y.push_back(
