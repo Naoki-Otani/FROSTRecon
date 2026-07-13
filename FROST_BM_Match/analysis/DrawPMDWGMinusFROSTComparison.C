@@ -178,6 +178,18 @@ bool SetVectorBranchAddress(TTree *tree,
 }
 
 template <typename T>
+bool SetOptionalVectorBranchAddress(TTree *tree,
+                                    const char *branch_name,
+                                    std::vector<T> **branch_ptr) {
+  if (!tree->GetBranch(branch_name)) {
+    std::cerr << "Warning: optional branch is missing: " << branch_name << std::endl;
+    return false;
+  }
+  tree->SetBranchAddress(branch_name, branch_ptr);
+  return true;
+}
+
+template <typename T>
 bool HasIndex(const std::vector<T> *values, std::size_t index) {
   return values && index < values->size();
 }
@@ -231,6 +243,15 @@ struct ResidualSamples {
 
   std::array<std::vector<double>, kNAnalysisBins> pm_only_x;
   std::array<std::vector<double>, kNAnalysisBins> pm_only_y;
+
+  std::array<std::vector<double>, kNAnalysisBins> pm_hit_multiplicity_per_plane_x;
+  std::array<std::vector<double>, kNAnalysisBins> pm_hit_multiplicity_per_plane_y;
+  std::array<std::vector<double>, kNAnalysisBins> pm_multi_hit_plane_fraction_x;
+  std::array<std::vector<double>, kNAnalysisBins> pm_multi_hit_plane_fraction_y;
+  std::array<std::vector<double>, kNAnalysisBins> pm_adjacent_hit_plane_fraction_x;
+  std::array<std::vector<double>, kNAnalysisBins> pm_adjacent_hit_plane_fraction_y;
+  std::array<std::vector<double>, kNAnalysisBins> pm_max_hits_per_plane_x;
+  std::array<std::vector<double>, kNAnalysisBins> pm_max_hits_per_plane_y;
 };
 
 void LoadResidualSamplesOneFile(const std::string &file_path,
@@ -262,6 +283,14 @@ void LoadResidualSamplesOneFile(const std::string &file_path,
   std::vector<double> *dwg_only_expected_y = nullptr;
   std::vector<double> *frost_nearest_x = nullptr;
   std::vector<double> *frost_nearest_y = nullptr;
+  std::vector<int> *pm_only_num_hits_x = nullptr;
+  std::vector<int> *pm_only_num_hits_y = nullptr;
+  std::vector<int> *pm_only_num_multi_hit_planes_x = nullptr;
+  std::vector<int> *pm_only_num_multi_hit_planes_y = nullptr;
+  std::vector<int> *pm_only_num_adjacent_hit_planes_x = nullptr;
+  std::vector<int> *pm_only_num_adjacent_hit_planes_y = nullptr;
+  std::vector<int> *pm_only_max_hits_per_plane_x = nullptr;
+  std::vector<int> *pm_only_max_hits_per_plane_y = nullptr;
 
   Int_t bsd_good_spill_flag = 0;
   Int_t detector_flags[8] = {};
@@ -281,6 +310,24 @@ void LoadResidualSamplesOneFile(const std::string &file_path,
   ok &= SetVectorBranchAddress(tree, "trackmatch_external_dwg_only_expected_y", &dwg_only_expected_y);
   ok &= SetVectorBranchAddress(tree, "trackmatch_frost_nearest_x", &frost_nearest_x);
   ok &= SetVectorBranchAddress(tree, "trackmatch_frost_nearest_y", &frost_nearest_y);
+
+  bool has_pm_multiplicity_branches = true;
+  has_pm_multiplicity_branches &= SetOptionalVectorBranchAddress(
+    tree, "trackmatch_external_pm_only_num_hits_x", &pm_only_num_hits_x);
+  has_pm_multiplicity_branches &= SetOptionalVectorBranchAddress(
+    tree, "trackmatch_external_pm_only_num_hits_y", &pm_only_num_hits_y);
+  has_pm_multiplicity_branches &= SetOptionalVectorBranchAddress(
+    tree, "trackmatch_external_pm_only_num_multi_hit_planes_x", &pm_only_num_multi_hit_planes_x);
+  has_pm_multiplicity_branches &= SetOptionalVectorBranchAddress(
+    tree, "trackmatch_external_pm_only_num_multi_hit_planes_y", &pm_only_num_multi_hit_planes_y);
+  has_pm_multiplicity_branches &= SetOptionalVectorBranchAddress(
+    tree, "trackmatch_external_pm_only_num_adjacent_hit_planes_x", &pm_only_num_adjacent_hit_planes_x);
+  has_pm_multiplicity_branches &= SetOptionalVectorBranchAddress(
+    tree, "trackmatch_external_pm_only_num_adjacent_hit_planes_y", &pm_only_num_adjacent_hit_planes_y);
+  has_pm_multiplicity_branches &= SetOptionalVectorBranchAddress(
+    tree, "trackmatch_external_pm_only_max_hits_per_plane_x", &pm_only_max_hits_per_plane_x);
+  has_pm_multiplicity_branches &= SetOptionalVectorBranchAddress(
+    tree, "trackmatch_external_pm_only_max_hits_per_plane_y", &pm_only_max_hits_per_plane_y);
 
   if (sample_type == SampleType::kData) {
     if (!tree->GetBranch("bsd_good_spill_flag")) {
@@ -369,6 +416,28 @@ void LoadResidualSamplesOneFile(const std::string &file_path,
                  pm_only_expected_x->at(itrack));
       }
 
+      if (has_pm_multiplicity_branches &&
+          HasIndex(n_pm_x, itrack) &&
+          n_pm_x->at(itrack) > 0 &&
+          HasIndex(pm_only_num_hits_x, itrack) &&
+          HasIndex(pm_only_num_multi_hit_planes_x, itrack) &&
+          HasIndex(pm_only_num_adjacent_hit_planes_x, itrack) &&
+          HasIndex(pm_only_max_hits_per_plane_x, itrack)) {
+        const double n_pm_planes_x = static_cast<double>(n_pm_x->at(itrack));
+        AddValue(samples.pm_hit_multiplicity_per_plane_x,
+                 angle_bin_x,
+                 static_cast<double>(pm_only_num_hits_x->at(itrack)) / n_pm_planes_x);
+        AddValue(samples.pm_multi_hit_plane_fraction_x,
+                 angle_bin_x,
+                 static_cast<double>(pm_only_num_multi_hit_planes_x->at(itrack)) / n_pm_planes_x);
+        AddValue(samples.pm_adjacent_hit_plane_fraction_x,
+                 angle_bin_x,
+                 static_cast<double>(pm_only_num_adjacent_hit_planes_x->at(itrack)) / n_pm_planes_x);
+        AddValue(samples.pm_max_hits_per_plane_x,
+                 angle_bin_x,
+                 static_cast<double>(pm_only_max_hits_per_plane_x->at(itrack)));
+      }
+
       if (HasIndex(pm_only_expected_y, itrack) &&
           HasIndex(dwg_only_expected_y, itrack) &&
           IsValidValue(pm_only_expected_y->at(itrack)) &&
@@ -382,6 +451,28 @@ void LoadResidualSamplesOneFile(const std::string &file_path,
         AddValue(samples.pm_only_y,
                  angle_bin_y,
                  pm_only_expected_y->at(itrack));
+      }
+
+      if (has_pm_multiplicity_branches &&
+          HasIndex(n_pm_y, itrack) &&
+          n_pm_y->at(itrack) > 0 &&
+          HasIndex(pm_only_num_hits_y, itrack) &&
+          HasIndex(pm_only_num_multi_hit_planes_y, itrack) &&
+          HasIndex(pm_only_num_adjacent_hit_planes_y, itrack) &&
+          HasIndex(pm_only_max_hits_per_plane_y, itrack)) {
+        const double n_pm_planes_y = static_cast<double>(n_pm_y->at(itrack));
+        AddValue(samples.pm_hit_multiplicity_per_plane_y,
+                 angle_bin_y,
+                 static_cast<double>(pm_only_num_hits_y->at(itrack)) / n_pm_planes_y);
+        AddValue(samples.pm_multi_hit_plane_fraction_y,
+                 angle_bin_y,
+                 static_cast<double>(pm_only_num_multi_hit_planes_y->at(itrack)) / n_pm_planes_y);
+        AddValue(samples.pm_adjacent_hit_plane_fraction_y,
+                 angle_bin_y,
+                 static_cast<double>(pm_only_num_adjacent_hit_planes_y->at(itrack)) / n_pm_planes_y);
+        AddValue(samples.pm_max_hits_per_plane_y,
+                 angle_bin_y,
+                 static_cast<double>(pm_only_max_hits_per_plane_y->at(itrack)));
       }
     }
   }
@@ -614,6 +705,82 @@ void DrawPmModuloPage(TCanvas &canvas,
   canvas.Print(output_pdf);
 }
 
+void DrawPmMultiplicityPage(TCanvas &canvas,
+                            Axis axis,
+                            int analysis_bin,
+                            const ResidualSamples &data,
+                            const ResidualSamples &mc,
+                            const char *output_pdf) {
+  canvas.Clear();
+  canvas.Divide(2, 2);
+
+  const std::string axis_label = AxisLabel(axis);
+  const std::string bin_title = AnalysisBinTitle(analysis_bin, axis);
+
+  const auto &data_hit_per_plane = axis == Axis::kX
+    ? data.pm_hit_multiplicity_per_plane_x.at(analysis_bin)
+    : data.pm_hit_multiplicity_per_plane_y.at(analysis_bin);
+  const auto &mc_hit_per_plane = axis == Axis::kX
+    ? mc.pm_hit_multiplicity_per_plane_x.at(analysis_bin)
+    : mc.pm_hit_multiplicity_per_plane_y.at(analysis_bin);
+  const auto &data_multi_fraction = axis == Axis::kX
+    ? data.pm_multi_hit_plane_fraction_x.at(analysis_bin)
+    : data.pm_multi_hit_plane_fraction_y.at(analysis_bin);
+  const auto &mc_multi_fraction = axis == Axis::kX
+    ? mc.pm_multi_hit_plane_fraction_x.at(analysis_bin)
+    : mc.pm_multi_hit_plane_fraction_y.at(analysis_bin);
+  const auto &data_adjacent_fraction = axis == Axis::kX
+    ? data.pm_adjacent_hit_plane_fraction_x.at(analysis_bin)
+    : data.pm_adjacent_hit_plane_fraction_y.at(analysis_bin);
+  const auto &mc_adjacent_fraction = axis == Axis::kX
+    ? mc.pm_adjacent_hit_plane_fraction_x.at(analysis_bin)
+    : mc.pm_adjacent_hit_plane_fraction_y.at(analysis_bin);
+  const auto &data_max_hits = axis == Axis::kX
+    ? data.pm_max_hits_per_plane_x.at(analysis_bin)
+    : data.pm_max_hits_per_plane_y.at(analysis_bin);
+  const auto &mc_max_hits = axis == Axis::kX
+    ? mc.pm_max_hits_per_plane_x.at(analysis_bin)
+    : mc.pm_max_hits_per_plane_y.at(analysis_bin);
+
+  canvas.cd(1);
+  DrawDataMcOverlay(data_hit_per_plane,
+                    mc_hit_per_plane,
+                    Form("%s, %s: PM hits per used plane", axis_label.c_str(), bin_title.c_str()),
+                    "PM hit multiplicity per used plane",
+                    80,
+                    0.0,
+                    4.0);
+
+  canvas.cd(2);
+  DrawDataMcOverlay(data_multi_fraction,
+                    mc_multi_fraction,
+                    Form("%s, %s: PM multi-hit plane fraction", axis_label.c_str(), bin_title.c_str()),
+                    "N_{multi-hit planes} / N_{used planes}",
+                    50,
+                    0.0,
+                    1.0);
+
+  canvas.cd(3);
+  DrawDataMcOverlay(data_adjacent_fraction,
+                    mc_adjacent_fraction,
+                    Form("%s, %s: PM adjacent-hit plane fraction", axis_label.c_str(), bin_title.c_str()),
+                    "N_{adjacent-hit planes} / N_{used planes}",
+                    50,
+                    0.0,
+                    1.0);
+
+  canvas.cd(4);
+  DrawDataMcOverlay(data_max_hits,
+                    mc_max_hits,
+                    Form("%s, %s: PM max hits per plane", axis_label.c_str(), bin_title.c_str()),
+                    "Maximum PM hits in one used plane",
+                    10,
+                    -0.5,
+                    9.5);
+
+  canvas.Print(output_pdf);
+}
+
 void DrawCoverPage(TCanvas &canvas,
                    const char *output_pdf,
                    const std::vector<std::string> &mc_files,
@@ -634,6 +801,7 @@ void DrawCoverPage(TCanvas &canvas,
   text->AddText("Data and MC are compared with MC scaled to the Data integral in each plot.");
   text->AddText("Angle bins: all, 0-5, 5-10, 10-20, 20-50 deg for each projection.");
   text->AddText("Additional pages show PM-only coordinate phases folded modulo 10 mm and 25 mm.");
+  text->AddText("Final pages show PM-only hit multiplicity and adjacent-hit fractions per used PM plane.");
   text->AddText("Selection follows the common PM/DWG hit-count selection used in CalculatePositionResolution.C.");
   text->AddText("");
   text->AddText(Form("MC files: %lu", static_cast<unsigned long>(mc_files.size())));
@@ -735,18 +903,36 @@ void DrawPMDWGMinusFROSTComparison(
   }
 
   for (int analysis_bin = 0; analysis_bin < kNAnalysisBins; ++analysis_bin) {
-    TString pdf_name = output_pdf;
-    if (analysis_bin == kNAnalysisBins - 1) {
-      pdf_name += ")";
-    }
     DrawPmModuloPage(canvas,
                      Axis::kY,
                      analysis_bin,
                      data_samples,
                      mc_samples,
-                     pdf_name.Data(),
+                     output_pdf,
                      nbins_mod10,
                      nbins_mod25);
+  }
+
+  for (int analysis_bin = 0; analysis_bin < kNAnalysisBins; ++analysis_bin) {
+    DrawPmMultiplicityPage(canvas,
+                           Axis::kX,
+                           analysis_bin,
+                           data_samples,
+                           mc_samples,
+                           output_pdf);
+  }
+
+  for (int analysis_bin = 0; analysis_bin < kNAnalysisBins; ++analysis_bin) {
+    TString pdf_name = output_pdf;
+    if (analysis_bin == kNAnalysisBins - 1) {
+      pdf_name += ")";
+    }
+    DrawPmMultiplicityPage(canvas,
+                           Axis::kY,
+                           analysis_bin,
+                           data_samples,
+                           mc_samples,
+                           pdf_name.Data());
   }
 
   std::cout << "Wrote PDF: " << output_pdf << std::endl;
